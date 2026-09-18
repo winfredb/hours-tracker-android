@@ -1,9 +1,0 @@
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-rootProject.name = 'HoursTracker'
-include ':app'

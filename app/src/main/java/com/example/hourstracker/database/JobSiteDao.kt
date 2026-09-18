@@ -1,10 +1,9 @@
 package com.example.hourstracker.database
 
-import com.example.hourstracker.model.JobSite
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.stateFlow
 import androidx.room.Dao
 import androidx.room.Query
+import com.example.hourstracker.model.JobSite
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface JobSiteDao {

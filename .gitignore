@@ -1,18 +1,22 @@
 # Gradle
-/.gradle
-/build/
+.gradle/
+build/
+**/build/
+*.apk
 
 # Android Studio
-/.idea/
-/.studio*
+.idea/
+*.iml
+.VSCODE/
+.studio*
 
 # Local configuration
-/local.properties
-/.gradle/settings*
+local.properties
+android.local.properties
 
-# OS generated files
+# Kotlin / generated
+**/generated/
+
+# OS generated
 .DS_Store
 Thumbs.db
-
-# iText PDF library specific
-itext-data/
