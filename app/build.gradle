@@ -25,10 +25,6 @@ android {
         jvmTarget = '17'
     }
 
-    kotlin {
-        toolchain = '21'
-    }
-
     composeOptions {
         kotlinCompilerExtensionVersion '1.5.0'
     }
@@ -42,15 +38,11 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'com.google.android.material:material3:1.2.0'
-
     implementation 'com.google.dagger:hilt-android:2.48'
     kapt 'com.google.dagger:hilt-android-compiler:2.48'
-
     implementation 'androidx.room:room-ktx:2.5.1'
     kapt 'androidx.room:room-compiler:2.5.1'
-
     implementation 'com.itextpdf:itext7:7.2.2'
-
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
     implementation 'androidx.lifecycle:lifecycle-livedata-ktx:2.7.0'
     implementation 'androidx.lifecycle:lifecycle-viewmodel-savedstate:2.7.0'
