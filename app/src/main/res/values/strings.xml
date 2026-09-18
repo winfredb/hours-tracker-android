@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Hours Tracker</string>
+    <string name="add_job_site">Add Job Site</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="edit_session">Edit Session</string>
+    <string name="delete">Delete</string>
+    <string name="export_pdf">Export PDF</string>
+    <string name="date_range">Date Range</string>
+    <string name="from">From</string>
+    <string name="to">To</string>
+    <string name="total_hours">Total Hours</string>
+</resources>

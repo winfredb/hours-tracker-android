@@ -1,0 +1,18 @@
+# Gradle
+/.gradle
+/build/
+
+# Android Studio
+/.idea/
+/.studio*
+
+# Local configuration
+/local.properties
+/.gradle/settings*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# iText PDF library specific
+itext-data/
