@@ -37,9 +37,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      # 📦 4. Set up Android SDK (platform 34 + build-tools)
+      # 📦 4. Set up Android SDK (ensure platform 34 + build-tools present)
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMGR" ]; then
+            SDKMGR="$(find /usr/local/lib/android -name sdkmanager 2>/dev/null | head -1)"
+          fi
+          echo "Expected: $SDK_ROOT  sdkmanager: $SDKMGR"
+          if [ -n "$SDKMGR" ]; then
+            yes | "$SDKMGR" --sdk_root="$SDK_ROOT" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+            yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+          fi
 
       # 🔧 5. Make the Gradle wrapper executable
       - name: Make Gradle wrapper executable
