@@ -1,32 +1,40 @@
 package com.example.hourstracker.view
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.hourstracker.model.JobSite
 import com.example.hourstracker.model.WorkSession
 import com.example.hourstracker.viewmodel.HoursViewModel
@@ -62,10 +71,12 @@ fun HoursTrackerScreen(
     var pendingStop by remember { mutableStateOf(false) }
     var stopBreakMinutes by remember { mutableStateOf("0") }
 
-    // Project management state
+    // Project drawer + management state
+    var showProjectsDrawer by remember { mutableStateOf(false) }
     var showAddProject by remember { mutableStateOf(false) }
     var newProjectName by remember { mutableStateOf("") }
     var newProjectLocation by remember { mutableStateOf("") }
+    var showManageProjects by remember { mutableStateOf(false) }
     var manageJobSiteId by remember { mutableStateOf<Int?>(null) }
     var renameName by remember { mutableStateOf("") }
     var renameLocation by remember { mutableStateOf("") }
@@ -79,152 +90,218 @@ fun HoursTrackerScreen(
 
     val currentProject = jobSites.find { it.id == selectedSiteId }
 
-    Column(
-        modifier = Modifier
-            .padding(16.dp)
-            .fillMaxSize()
-    ) {
-        Text("Hours Tracker")
-
-        // Large orange halo button: Start when idle, Pause/Resume when running.
-        // Smaller square Stop button appears below it while the clock runs.
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp, bottom = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                when {
-                    !clockRunning -> if (currentProject == null) "Idle · pick a project" else "Idle · ${currentProject.name}"
-                    clockPaused -> "Paused · ${currentProject?.name ?: ""}"
-                    else -> "Working on ${currentProject?.name ?: ""} · since $startedAt"
-                },
-                style = MaterialTheme.typography.titleMedium
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopAppBar(
+                title = { Text("Hours Tracker", fontWeight = FontWeight.Bold) },
+                actions = {
+                    IconButton(onClick = { showProjectsDrawer = true }) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Projects")
+                    }
+                }
             )
 
-            if (clockRunning) {
-                Text(
-                    formatElapsedSec(elapsedSec),
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = if (clockPaused) MaterialTheme.colorScheme.outline
-                    else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
-                )
-            }
-
-            // Big orange halo — Start when idle, Pause/Resume when running
-            Box(
+            Column(
                 modifier = Modifier
-                    .size(200.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFFFF8C00))
-                    .clickable {
-                        if (clockRunning) {
-                            if (clockPaused) viewModel.resumeClock() else viewModel.pauseClock()
-                        } else {
-                            if (selectedSiteId == null) showAddProject = true
-                            else viewModel.startClock()
-                        }
-                    },
-                contentAlignment = Alignment.Center
+                    .padding(16.dp)
+                    .fillMaxSize()
             ) {
-                Text(
-                    if (!clockRunning) "▶ Start"
-                    else if (clockPaused) "▶ Resume"
-                    else "⏸ Pause",
-                    fontSize = 28.sp,
-                    color = Color.White
-                )
-            }
-
-            // Smaller square Stop button, only while running
-            if (clockRunning) {
-                Spacer(Modifier.height(16.dp))
-                Box(
+                // Large orange halo button: Start when idle, Pause/Resume when running.
+                Column(
                     modifier = Modifier
-                        .size(72.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFFD32F2F))
-                        .clickable {
-                            stopBreakMinutes = "0"
-                            pendingStop = true
-                        },
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("■ Stop", fontSize = 15.sp, color = Color.White)
+                    Text(
+                        when {
+                            !clockRunning -> if (currentProject == null) "Idle · pick a project" else "Idle · ${currentProject.name}"
+                            clockPaused -> "Paused · ${currentProject?.name ?: ""}"
+                            else -> "Working on ${currentProject?.name ?: ""} · since $startedAt"
+                        },
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
+                    if (clockRunning) {
+                        Text(
+                            formatElapsedSec(elapsedSec),
+                            style = MaterialTheme.typography.headlineLarge,
+                            color = if (clockPaused) MaterialTheme.colorScheme.outline
+                            else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                        )
+                    }
+
+                    // Big orange halo — Start when idle, Pause/Resume when running
+                    Box(
+                        modifier = Modifier
+                            .size(200.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFFF8C00))
+                            .clickable {
+                                if (clockRunning) {
+                                    if (clockPaused) viewModel.resumeClock() else viewModel.pauseClock()
+                                } else {
+                                    if (selectedSiteId == null) showAddProject = true
+                                    else viewModel.startClock()
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (!clockRunning) "▶ Start"
+                            else if (clockPaused) "▶ Resume"
+                            else "⏸ Pause",
+                            fontSize = 28.sp,
+                            color = Color.White
+                        )
+                    }
+
+                    // Smaller square Stop button, only while running
+                    if (clockRunning) {
+                        Spacer(Modifier.height(16.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFFD32F2F))
+                                .clickable {
+                                    stopBreakMinutes = "0"
+                                    pendingStop = true
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("■ Stop", fontSize = 15.sp, color = Color.White)
+                        }
+                    }
                 }
-            }
-        }
 
-        // Save status feedback
-        if (statusMessage.isNotEmpty()) {
-            Text(statusMessage, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
-        }
+                // Save status feedback
+                if (statusMessage.isNotEmpty()) {
+                    Text(statusMessage, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
+                }
 
-        // Project selector
-        Text("Project", style = MaterialTheme.typography.titleSmall)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (jobSites.isEmpty()) {
-                Text("No projects yet. Add one to start tracking.", modifier = Modifier.padding(vertical = 8.dp))
-            } else {
-                jobSites.forEach { site ->
-                    FilterChip(
-                        selected = site.id == selectedSiteId,
-                        onClick = { viewModel.selectJobSite(site.id) },
-                        label = { Text(site.name) }
+                // Date range filter
+                OutlinedTextField(
+                    value = byDate,
+                    onValueChange = { byDate = it },
+                    label = { Text("From") },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                )
+                OutlinedTextField(
+                    value = toDate,
+                    onValueChange = { toDate = it },
+                    label = { Text("To") },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                )
+
+                if (sessions.isEmpty()) {
+                    Text("No sessions recorded yet")
+                } else {
+                    SessionsList(
+                        sessions = sessions,
+                        jobSites = jobSites,
+                        onEdit = { session ->
+                            editSessionId = session.id
+                            editDate = session.date
+                            editStartTime = session.startTime
+                            editEndTime = session.endTime
+                            editBreakMinutes = session.breakMinutes.toString()
+                            selectedJobSiteId = session.jobSiteId
+                        },
+                        onDelete = { session -> viewModel.deleteSession(session) }
                     )
                 }
             }
         }
-        Row(modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)) {
-            OutlinedButton(onClick = { showAddProject = true }) {
-                Text("＋ Add Project")
-            }
-            if (jobSites.isNotEmpty()) {
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { selectedJobSiteId = selectedSiteId }) {
-                    Text("Manage")
-                }
-            }
+
+        // Scrim behind the drawer
+        if (showProjectsDrawer) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable { showProjectsDrawer = false }
+            )
         }
 
-        // Date range filter
-        OutlinedTextField(
-            value = byDate,
-            onValueChange = { byDate = it },
-            label = { Text("From") },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-        )
-        OutlinedTextField(
-            value = toDate,
-            onValueChange = { toDate = it },
-            label = { Text("To") },
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-        )
+        // Right-side project drawer
+        AnimatedVisibility(
+            visible = showProjectsDrawer,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it },
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .zIndex(1f)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .width(300.dp)
+                    .fillMaxHeight(),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Projects", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(8.dp))
 
-        if (sessions.isEmpty()) {
-            Text("No sessions recorded yet")
-        } else {
-            SessionsList(
-                sessions = sessions,
-                jobSites = jobSites,
-                onEdit = { session ->
-                    editSessionId = session.id
-                    editDate = session.date
-                    editStartTime = session.startTime
-                    editEndTime = session.endTime
-                    editBreakMinutes = session.breakMinutes.toString()
-                    selectedJobSiteId = session.jobSiteId
-                },
-                onDelete = { session -> viewModel.deleteSession(session) }
-            )
+                    if (jobSites.isEmpty()) {
+                        Text("No projects yet. Add one to start tracking.")
+                    } else {
+                        jobSites.forEach { site ->
+                            val selected = site.id == selectedSiteId
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                                        else Color.Transparent
+                                    )
+                                    .clickable {
+                                        viewModel.selectJobSite(site.id)
+                                        showProjectsDrawer = false
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (selected) {
+                                    Icon(
+                                        Icons.Filled.Check,
+                                        contentDescription = "Selected",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Text(
+                                    site.name,
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedButton(
+                        onClick = {
+                            showAddProject = true
+                            showProjectsDrawer = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("＋ Add Project") }
+
+                    if (jobSites.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedButton(
+                            onClick = {
+                                showManageProjects = true
+                                showProjectsDrawer = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Manage Projects") }
+                    }
+                }
+            }
         }
     }
 
@@ -294,11 +371,11 @@ fun HoursTrackerScreen(
     }
 
     // Manage projects dialog (rename / delete)
-    if (selectedJobSiteId != null && jobSites.isNotEmpty()) {
+    if (showManageProjects) {
         AlertDialog(
-            onDismissRequest = { selectedJobSiteId = selectedSiteId },
+            onDismissRequest = { showManageProjects = false },
             confirmButton = {
-                TextButton(onClick = { selectedJobSiteId = selectedSiteId }) { Text("Close") }
+                TextButton(onClick = { showManageProjects = false }) { Text("Close") }
             },
             title = { Text("Manage Projects") },
             text = {
