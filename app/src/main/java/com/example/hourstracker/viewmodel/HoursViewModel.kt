@@ -34,9 +34,6 @@ class HoursViewModel @Inject constructor(
     private val _jobSites: MutableStateFlow<List<JobSite>> = MutableStateFlow(emptyList())
     val jobSites: StateFlow<List<JobSite>> = _jobSites.asStateFlow()
 
-    private val _selectedJobSiteId: MutableStateFlow<Int?> = MutableStateFlow(null)
-    val selectedJobSiteId: StateFlow<Int?> = _selectedJobSiteId.asStateFlow()
-
     private val _sessions: MutableStateFlow<List<WorkSession>> = MutableStateFlow(emptyList())
     val sessions: StateFlow<List<WorkSession>> = _sessions.asStateFlow()
 
@@ -60,14 +57,9 @@ class HoursViewModel @Inject constructor(
         Log.d("HoursTracker", "ViewModel initialized")
     }
 
-    /** Records the current time and starts the work clock for the selected project. */
+    /** Records the current time and starts the work clock. */
     fun startClock() {
         if (_clockRunning.value) return
-        val selectedId = _selectedJobSiteId.value
-        if (selectedId == null) {
-            _statusMessage.value = "Pick a project before starting"
-            return
-        }
         val now = java.time.LocalTime.now()
         _startedAt.value = now.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         _clockRunning.value = true
@@ -83,13 +75,6 @@ class HoursViewModel @Inject constructor(
                 }
             }
         }
-    }
-
-    /** Selects which project the clock records against. */
-    fun selectJobSite(id: Int) {
-        _selectedJobSiteId.value = id
-        val name = _jobSites.value.find { it.id == id }?.name
-        if (!_clockRunning.value) _statusMessage.value = "Tracking: ${name ?: ""}"
     }
 
     /** Pauses the running clock, keeping the accumulated time so far. */
@@ -132,9 +117,6 @@ class HoursViewModel @Inject constructor(
             try {
                 val sites = database.jobSiteDao().getAllJobSites().first()
                 _jobSites.value = sites
-                if (_selectedJobSiteId.value == null && sites.isNotEmpty()) {
-                    _selectedJobSiteId.value = sites[0].id
-                }
                 _sessions.value = database.workSessionDao().getAllSessions().first()
                 Log.d("HoursTracker", "refreshData loaded ${_sessions.value.size} sessions")
                 _statusMessage.value = "Loaded ${_sessions.value.size} sessions ✓"
@@ -196,10 +178,9 @@ class HoursViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                val newId = database.jobSiteDao()
+                database.jobSiteDao()
                     .insertJobSite(JobSite(name = name.trim(), location = location))
                 _jobSites.value = database.jobSiteDao().getAllJobSites().first()
-                _selectedJobSiteId.value = newId.toInt()
                 _statusMessage.value = "Project added ✓"
             } catch (e: Throwable) {
                 _statusMessage.value = "Add project FAILED: ${e.message}"
@@ -232,9 +213,6 @@ class HoursViewModel @Inject constructor(
                 database.jobSiteDao().deleteJobSite(id)
                 val sites = database.jobSiteDao().getAllJobSites().first()
                 _jobSites.value = sites
-                if (_selectedJobSiteId.value == id) {
-                    _selectedJobSiteId.value = sites.firstOrNull()?.id
-                }
                 _statusMessage.value = "Project deleted ✓"
             } catch (e: Throwable) {
                 _statusMessage.value = "Delete FAILED: ${e.message}"

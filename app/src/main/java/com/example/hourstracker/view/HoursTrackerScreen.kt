@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -85,9 +84,6 @@ fun HoursTrackerScreen(
     val startedAt by viewModel.startedAt.collectAsState()
     val elapsedSec by viewModel.elapsedSeconds.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
-    val selectedSiteId by viewModel.selectedJobSiteId.collectAsState()
-
-    val currentProject = jobSites.find { it.id == selectedSiteId }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -117,9 +113,9 @@ fun HoursTrackerScreen(
                 ) {
                     Text(
                         when {
-                            !clockRunning -> if (currentProject == null) "Idle · pick a project" else "Idle · ${currentProject.name}"
-                            clockPaused -> "Paused · ${currentProject?.name ?: ""}"
-                            else -> "Working on ${currentProject?.name ?: ""} · since $startedAt"
+                            !clockRunning -> "Idle"
+                            clockPaused -> "Paused since $startedAt"
+                            else -> "Working since $startedAt"
                         },
                         style = MaterialTheme.typography.titleMedium
                     )
@@ -144,8 +140,7 @@ fun HoursTrackerScreen(
                                 if (clockRunning) {
                                     if (clockPaused) viewModel.resumeClock() else viewModel.pauseClock()
                                 } else {
-                                    if (selectedSiteId == null) showAddProject = true
-                                    else viewModel.startClock()
+                                    viewModel.startClock()
                                 }
                             },
                         contentAlignment = Alignment.Center
@@ -257,36 +252,17 @@ fun HoursTrackerScreen(
                     if (jobSites.isEmpty()) {
                         Text("No projects yet. Add one to start tracking.")
                     } else {
-                        jobSites.forEach { site ->
-                            val selected = site.id == selectedSiteId
+                        // Sorted projects list for reference (no selection here — pick the job when you stop the timer).
+                        jobSites.sortedBy { it.name }.forEach { site ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        if (selected) MaterialTheme.colorScheme.primaryContainer
-                                        else Color.Transparent
-                                    )
-                                    .clickable {
-                                        viewModel.selectJobSite(site.id)
-                                        showProjectsDrawer = false
-                                    }
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                if (selected) {
-                                    Icon(
-                                        Icons.Filled.Check,
-                                        contentDescription = "Selected",
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                }
-                                Text(
-                                    site.name,
-                                    modifier = Modifier.weight(1f),
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                                )
+                                Text(site.name)
                             }
                         }
                     }
@@ -339,10 +315,7 @@ fun HoursTrackerScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        if (site.id == selectedSiteId) MaterialTheme.colorScheme.primaryContainer
-                                        else MaterialTheme.colorScheme.surfaceVariant
-                                    )
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .clickable {
                                         pendingProjectStop = false
                                         viewModel.stopClock(site.id)
