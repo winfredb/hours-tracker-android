@@ -43,7 +43,11 @@ class MainActivity : Activity() {
     private var clockRunning = false
     private var clockPaused = false
     private var startedAt = ""
-    private var elapsedSec = 0L
+    // Persisted wall-clock state so the clock keeps accruing even if the
+    // process is killed. segmentStartMs = epoch of the current running segment
+    // (0 when paused/stopped); accumulatedMs = time banked from earlier segments.
+    private var segmentStartMs = 0L
+    private var accumulatedMs = 0L
     private var statusMessage = ""
     private var sessionsExpanded = true
 
@@ -65,13 +69,9 @@ class MainActivity : Activity() {
         db = HoursDb(this)
         prefs = getSharedPreferences("hours_tracker", Context.MODE_PRIVATE)
         isDark = prefs.getBoolean("dark", false)
-        // Restore the running clock across rotation so the timer isn't reset.
-        savedInstanceState?.let {
-            clockRunning = it.getBoolean("clockRunning", false)
-            clockPaused = it.getBoolean("clockPaused", clockRunning)
-            startedAt = it.getString("startedAt") ?: ""
-            elapsedSec = it.getLong("elapsedSec", 0L)
-        }
+        // Restore the running clock from persisted wall-clock state so the timer
+        // keeps accruing even across process death / relaunch.
+        restoreClockState()
         refreshData()
         buildLayout()
         startTicker()
@@ -79,10 +79,11 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
+        // Mirror the current computed elapsed into the bundle for rotation safety.
         outState.putBoolean("clockRunning", clockRunning)
         outState.putBoolean("clockPaused", clockPaused)
         outState.putString("startedAt", startedAt)
-        outState.putLong("elapsedSec", elapsedSec)
+        outState.putLong("elapsedMs", elapsedMs())
     }
 
     override fun onDestroy() {
@@ -232,44 +233,85 @@ class MainActivity : Activity() {
     }
 
     // ==================== TIMER ====================
+    //
+    // The clock is tracked against the WALL CLOCK, not an in-memory counter:
+    //   elapsed = accumulatedMs + (now - segmentStartMs)   [while running]
+    //   elapsed = accumulatedMs                             [while paused/stopped]
+    // accumulatedMs and segmentStartMs are persisted, so even if the OS kills the
+    // process, on relaunch the elapsed time is recomputed from real time and the
+    // clock keeps accruing seamlessly.
 
-    private fun startTicker() {
-        if (tickerRunning) return
-        tickerRunning = true
-        mainHandler.post(object : Runnable {
-            override fun run() {
-                if (clockRunning && !clockPaused) {
-                    elapsedSec++
-                }
-                if (clockRunning) updateClockViews()
-                mainHandler.postDelayed(this, 1000L)
-            }
-        })
-    }
+private fun persistClock() {
+    prefs.edit()
+        .putBoolean("clockRunning", clockRunning)
+        .putBoolean("clockPaused", clockPaused)
+        .putString("startedAt", startedAt)
+        .putLong("segmentStartMs", segmentStartMs)
+        .putLong("accumulatedMs", accumulatedMs)
+        .apply()
+}
 
-    private fun stopTicker() { tickerRunning = false; mainHandler.removeCallbacksAndMessages(null) }
+private fun restoreClockState() {
+    clockRunning = prefs.getBoolean("clockRunning", false)
+    clockPaused = prefs.getBoolean("clockPaused", false)
+    startedAt = prefs.getString("startedAt", "") ?: ""
+    segmentStartMs = prefs.getLong("segmentStartMs", 0L)
+    accumulatedMs = prefs.getLong("accumulatedMs", 0L)
+}
 
-    private fun onHaloTap() {
-        when {
-            !clockRunning -> {
-                startedAt = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-                clockRunning = true; clockPaused = false; elapsedSec = 0L
-            }
-            clockPaused -> clockPaused = false
-            else -> clockPaused = true
+private fun elapsedMs(): Long {
+    if (!clockRunning) return 0L
+    if (clockPaused || segmentStartMs == 0L) return accumulatedMs
+    return accumulatedMs + (System.currentTimeMillis() - segmentStartMs)
+}
+
+private fun startTicker() {
+    if (tickerRunning) return
+    tickerRunning = true
+    mainHandler.post(object : Runnable {
+        override fun run() {
+            if (clockRunning) updateClockViews()
+            mainHandler.postDelayed(this, 1000L)
         }
-        renderAll()
-    }
+    })
+}
 
-    private fun stopClock(jobSiteId: Int) {
-        clockRunning = false; clockPaused = false
-        val start = startedAt
-        val end = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-        val today = LocalDate.now().toString()
-        insertSession(WorkSession(id = 0, jobSiteId = jobSiteId, date = today, startTime = start, endTime = end, breakMinutes = 0, notes = "clock"))
-        startedAt = ""; elapsedSec = 0L
-        renderAll()
+private fun stopTicker() { tickerRunning = false; mainHandler.removeCallbacksAndMessages(null) }
+
+private fun onHaloTap() {
+    when {
+        !clockRunning -> {
+            startedAt = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
+            clockRunning = true; clockPaused = false
+            accumulatedMs = 0L
+            segmentStartMs = System.currentTimeMillis()
+        }
+        clockPaused -> {
+            // resume
+            clockPaused = false
+            segmentStartMs = System.currentTimeMillis()
+        }
+        else -> {
+            // pause
+            accumulatedMs = elapsedMs()
+            segmentStartMs = 0L
+            clockPaused = true
+        }
     }
+    persistClock()
+    renderAll()
+}
+
+private fun stopClock(jobSiteId: Int) {
+    clockRunning = false; clockPaused = false
+    val start = startedAt
+    val end = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
+    val today = LocalDate.now().toString()
+    insertSession(WorkSession(id = 0, jobSiteId = jobSiteId, date = today, startTime = start, endTime = end, breakMinutes = 0, notes = "clock"))
+    startedAt = ""; segmentStartMs = 0L; accumulatedMs = 0L
+    persistClock()
+    renderAll()
+}
 
     // ==================== LAYOUT ====================
 
@@ -436,7 +478,7 @@ class MainActivity : Activity() {
         glyphView?.text = if (!clockRunning || clockPaused) "▶" else "⏸"
         labelView?.text = if (!clockRunning) "Start" else if (clockPaused) "Resume" else "Pause"
         elapsedView?.let { tv ->
-            tv.text = formatElapsedSec(elapsedSec)
+            tv.text = formatElapsedMs(elapsedMs())
             tv.setTextColor(if (clockPaused) onSurfaceVariantColor else primaryColor)
         }
     }
@@ -710,9 +752,10 @@ class MainActivity : Activity() {
         return if (h > 0) "${h}h ${m}m" else "${m}m"
     }
 
-    private fun formatElapsedSec(total: Long): String {
-        val h = total / 3600; val m = (total % 3600) / 60; val s = total % 60
-        return if (h > 0) "${h}h ${m}m ${s}s" else if (m > 0) "${m}m ${s}s" else "${s}s"
+    private fun formatElapsedMs(totalMs: Long): String {
+        val s = totalMs / 1000
+        val h = s / 3600; val m = (s % 3600) / 60; val ss = s % 60
+        return if (h > 0) "${h}h ${m}m ${ss}s" else if (m > 0) "${m}m ${ss}s" else "${ss}s"
     }
 
     // ==================== XLSX EXPORT ====================
