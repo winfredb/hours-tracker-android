@@ -8,11 +8,11 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.hourstracker"
+        applicationId = "com.example.hourstracker2"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 6
+        versionName = "1.5"
     }
 
     compileOptions {

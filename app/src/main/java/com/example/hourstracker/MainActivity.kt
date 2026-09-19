@@ -6,6 +6,7 @@ import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.database.Cursor
 import android.graphics.Canvas
@@ -15,6 +16,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.pdf.PdfDocument
 import android.os.Bundle
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.Handler
@@ -536,7 +538,7 @@ private fun stopClock(jobSiteId: Int) {
         row2.addView(View(this).apply {}, LinearLayout.LayoutParams(0, 1, 1f))
         row2.addView(textAction("Edit") { showEditSession(session) })
         row2.addView(textAction("Delete") {
-            AlertDialog.Builder(this@MainActivity)
+            AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                 .setTitle("Delete task?")
                 .setMessage("${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}")
                 .setPositiveButton("Delete") { _, _ -> deleteSession(session) }
@@ -715,7 +717,7 @@ private fun stopClock(jobSiteId: Int) {
     private fun showAddProject() {
         val name = EditText(this).apply { hint = "Project name"; setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor) }
         val loc = EditText(this).apply { hint = "Location (optional)"; setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor) }
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Add Project")
             .setView(fieldColumn(name, loc))
             .setPositiveButton("Add") { _, _ ->
@@ -741,7 +743,7 @@ private fun stopClock(jobSiteId: Int) {
                     text = "Delete"; textSize = 13f; setTypeface(null, Typeface.BOLD)
                     setTextColor(errorColor); setPadding(dp(8), dp(4), dp(8), dp(4))
                     setOnClickListener {
-                        AlertDialog.Builder(this@MainActivity)
+                        AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                             .setTitle("Delete ${site.name}?")
                             .setMessage("Tasks will stay; the project is removed.")
                             .setPositiveButton("Delete") { _, _ -> deleteSite(site.id) }
@@ -751,7 +753,7 @@ private fun stopClock(jobSiteId: Int) {
                 })
             })
         }
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Manage Projects")
             .setView(rows)
             .setPositiveButton("Close", null)
@@ -761,7 +763,7 @@ private fun stopClock(jobSiteId: Int) {
     private fun showRename(site: JobSite) {
         val name = EditText(this).apply { setText(site.name); setTextColor(onSurfaceColor) }
         val loc = EditText(this).apply { setText(site.location ?: ""); setTextColor(onSurfaceColor) }
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Rename Project")
             .setView(fieldColumn(name, loc))
             .setPositiveButton("Save") { _, _ ->
@@ -774,7 +776,7 @@ private fun stopClock(jobSiteId: Int) {
 
     private fun showStopPicker() {
         val names = jobSites.map { it.name }.toTypedArray()
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Which job were you working on?")
             .setItems(if (names.isEmpty()) arrayOf("No projects yet") else names) { _, which ->
                 if (names.isNotEmpty() && which in jobSites.indices) stopClock(jobSites[which].id)
@@ -977,7 +979,7 @@ private fun stopClock(jobSiteId: Int) {
      * under Downloads reliably under scoped storage; falls back to plain File
      * IO on older versions. Returns a human-friendly display path.
      */
-    private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): String {
+    private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): Pair<String, Uri?> {
         val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}".trimEnd('/') + "/"
         val dirName = if (subdir.isBlank()) "HoursTracker" else "$subdir"
         if (Build.VERSION.SDK_INT >= 29) {
@@ -999,13 +1001,34 @@ private fun stopClock(jobSiteId: Int) {
                 throw e
             }
             val pathPart = (if (dirName.isBlank()) "" else "$dirName/") + filename
-            return "Downloads/$pathPart"
+            return "Downloads/$pathPart" to uri
         } else {
             val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HoursTracker")
             val sub = if (subdir.isBlank()) dir else File(dir, subdir)
             sub.mkdirs()
             File(sub, filename).writeBytes(bytes)
-            return "Downloads/${if (dirName.isBlank()) "" else "$dirName/"}${filename}"
+            return "Downloads/${if (dirName.isBlank()) "" else "$dirName/"}${filename}" to Uri.fromFile(File(sub, filename))
+        }
+    }
+
+    /** Shares a generated file (e.g. exported PDF) via the system share sheet. */
+    private fun shareFile(filename: String, uri: Uri?) {
+        if (uri == null) {
+            statusMessage = "Sharing failed: file not available"
+            renderAll()
+            return
+        }
+        try {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, filename)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(send, "Share PDF"))
+        } catch (e: Exception) {
+            statusMessage = "Share failed: ${e.message}"
+            renderAll()
         }
     }
 
@@ -1053,18 +1076,14 @@ private fun stopClock(jobSiteId: Int) {
             val opts = listOf(
                 "This week" to { rangeForPreset("thisweek") },
                 "Last week" to { rangeForPreset("lastweek") },
-                "This month" to { rangeForPreset("thismonth") },
-                "Last month" to { rangeForPreset("lastmonth") },
-                "Last 30 days" to { rangeForPreset("30days") },
+                "2 weeks from date…" to { showTwoWeekFromDatePicker() },
                 "All time" to { rangeForPreset("all") },
-                "Custom range…" to { null }
+                "Custom range…" to { showCustomRangePicker() }
             )
-            AlertDialog.Builder(this)
+            AlertDialog.Builder(this, pickerDialogThemeId())
                 .setTitle("Export date range")
                 .setItems(opts.map { it.first }.toTypedArray()) { _, which ->
-                    val rst = opts[which].second()
-                    if (which == opts.size - 1) showCustomRangePicker()
-                    else rst?.let { exportRange(it.first, it.second) }
+                    opts[which].second()
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
@@ -1115,6 +1134,18 @@ private fun stopClock(jobSiteId: Int) {
             }, today.year, today.monthValue - 1, today.dayOfMonth).show()
         }
 
+        // Export 2 weeks (14 days) starting on a calendar-picked date.
+        private fun showTwoWeekFromDatePicker() {
+            val today = LocalDate.now()
+            DatePickerDialog(this, pickerDialogThemeId(), { _, y, mo, d ->
+                showTwoWeekRange(LocalDate.of(y, mo + 1, d))
+            }, today.year, today.monthValue - 1, today.dayOfMonth).show()
+        }
+
+        private fun showTwoWeekRange(start: LocalDate) {
+            exportRange(start.toString(), start.plusDays(13).toString())
+        }
+
         /**
          * Builds the date-range xlsx + matching PDF and writes both to
          * Downloads/HoursTracker/. Summary sheet = per-project totals with an
@@ -1158,16 +1189,18 @@ private fun stopClock(jobSiteId: Int) {
                 }
 
                 val label = "${from}_to_${to}"
-                val pdfPath = writeDownload("Export", "Summary_$label.pdf", buildPdf(from, to, summaryRows, weekRows))
+                val (pdfPath, pdfUri) = writeDownload("Export", "Summary_$label.pdf", buildPdf(from, to, summaryRows, weekRows))
                 statusMessage = "Exported $from → $to (pdf) ✓"
-                AlertDialog.Builder(this)
+                val filename = "Summary_$label.pdf"
+                AlertDialog.Builder(this, pickerDialogThemeId())
                     .setTitle("Export complete ✓")
                     .setMessage("Saved:\n• $pdfPath")
                     .setPositiveButton("OK", null)
+                    .setNeutralButton("Share", { _, _ -> shareFile(filename, pdfUri) })
                     .show()
             } catch (e: Exception) {
                 statusMessage = "Export FAILED: ${e.message}"
-                AlertDialog.Builder(this)
+                AlertDialog.Builder(this, pickerDialogThemeId())
                     .setTitle("Export failed")
                     .setMessage(e.message ?: "Unknown error")
                     .setPositiveButton("OK", null)
