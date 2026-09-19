@@ -104,13 +104,12 @@ class HoursViewModel @Inject constructor(
         _clockPaused.value = false
     }
 
-    /** Stops the clock and saves a WorkSession for the elapsed time. */
-    fun stopClock(breakMinutes: Int) {
+    /** Stops the clock and saves a WorkSession for the elapsed time to the given project. */
+    fun stopClock(jobSiteId: Int) {
         if (!_clockRunning.value) return
         val start = _startedAt.value
         val end = java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         val today = java.time.LocalDate.now().toString()
-        val jobSiteId = _selectedJobSiteId.value ?: 1
         addSession(
             WorkSession(
                 id = 0,
@@ -118,7 +117,7 @@ class HoursViewModel @Inject constructor(
                 date = today,
                 startTime = start,
                 endTime = end,
-                breakMinutes = breakMinutes,
+                breakMinutes = 0,
                 notes = "clock"
             )
         )

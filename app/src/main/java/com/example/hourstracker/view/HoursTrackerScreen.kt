@@ -68,6 +68,7 @@ fun HoursTrackerScreen(
     var editEndTime by remember { mutableStateOf("17:00") }
     var editDate by remember { mutableStateOf(java.time.LocalDate.now().toString()) }
     var sessionsExpanded by remember { mutableStateOf(false) }
+    var pendingProjectStop by remember { mutableStateOf(false) }
 
     // Project drawer + management state
     var showProjectsDrawer by remember { mutableStateOf(false) }
@@ -166,11 +167,15 @@ fun HoursTrackerScreen(
                                 .size(72.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(Color(0xFFD32F2F))
-                                .clickable { viewModel.stopClock(0) },
-                                                        contentAlignment = Alignment.Center
-                                                    ) {
-                            Text("■ Stop", fontSize = 15.sp, color = Color.White)
-                        }
+                                .clickable {
+                                    // Pause immediately so time stops accruing, then ask which job.
+                                    viewModel.pauseClock()
+                                    pendingProjectStop = true
+                                },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("■ Stop", fontSize = 15.sp, color = Color.White)
+                            }
                     }
                 }
 
@@ -308,6 +313,55 @@ fun HoursTrackerScreen(
                 }
             }
         }
+    }
+
+    // Project-picker dialog when stopping the clock
+    if (pendingProjectStop) {
+        AlertDialog(
+            onDismissRequest = {
+                pendingProjectStop = false
+                viewModel.resumeClock()
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingProjectStop = false
+                    viewModel.resumeClock()
+                }) { Text("Cancel") }
+            },
+            title = { Text("Which job were you working on?") },
+            text = {
+                if (jobSites.isEmpty()) {
+                    Text("No projects yet. Add one from the menu (☰).")
+                } else {
+                    Column(modifier = Modifier.fillMaxWidth().padding(0.dp)) {
+                        jobSites.forEach { site ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (site.id == selectedSiteId) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                    .clickable {
+                                        pendingProjectStop = false
+                                        viewModel.stopClock(site.id)
+                                    }
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    site.name,
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                }
+            }
+        )
     }
 
     // Add-project dialog
