@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -88,8 +89,11 @@ fun HoursTrackerScreen(
     val elapsedSec by viewModel.elapsedSeconds.collectAsState()
     val statusMessage by viewModel.statusMessage.collectAsState()
 
-    AppTheme {
-        Box(modifier = Modifier.fillMaxSize()) {
+    // Dark mode toggle
+    var isDark by remember { mutableStateOf(false) }
+
+    AppTheme(dark = isDark) {
+        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             Column(modifier = Modifier.fillMaxSize()) {
                 TopAppBar(
                     title = { Text("Hours Tracker", fontWeight = FontWeight.Bold) },
@@ -382,6 +386,16 @@ fun HoursTrackerScreen(
                                 modifier = Modifier.fillMaxWidth()
                             ) { Text("Manage Projects") }
                         }
+
+                        Spacer(Modifier.height(20.dp))
+                        OutlinedButton(
+                            onClick = { isDark = !isDark },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (isDark) "☀ Light mode" else "🌙 Dark mode"
+                            )
+                        }
                     }
                 }
             }
@@ -597,10 +611,40 @@ fun HoursTrackerScreen(
     }
 }
 
-/** Wraps the UI in a modern, cohesive Material 3 color scheme. */
+/** Wraps the UI in a modern, cohesive Material 3 color scheme (light or dark). */
 @Composable
-fun AppTheme(content: @Composable () -> Unit) {
-    val scheme = lightColorScheme(
+fun AppTheme(dark: Boolean, content: @Composable () -> Unit) {
+    val scheme = if (dark) darkColorScheme(
+        Color(0xFF9EC3FF),        // primary
+        Color(0xFF0B1F53),        // onPrimary
+        Color(0xFF1E3B8F),        // primaryContainer
+        Color(0xFFD9E3FF),        // onPrimaryContainer
+        Color(0xFF2A5BD7),        // inversePrimary
+        Color(0xFFB7C4DB),        // secondary
+        Color(0xFF243040),        // onSecondary
+        Color(0xFF3A4A61),        // secondaryContainer
+        Color(0xFFD7E1EE),        // onSecondaryContainer
+        Color(0xFF8FD4B8),        // tertiary
+        Color(0xFF10352C),        // onTertiary
+        Color(0xFF1F5F4D),        // tertiaryContainer
+        Color(0xFFBDE9DA),        // onTertiaryContainer
+        Color(0xFF101318),        // background
+        Color(0xFFE3E5E9),        // onBackground
+        Color(0xFF101318),        // surface
+        Color(0xFFE3E5E9),        // onSurface
+        Color(0xFF23262E),        // surfaceVariant
+        Color(0xFFBEC3CC),        // onSurfaceVariant
+        Color(0xFF9EC3FF),        // surfaceTint
+        Color(0xFFE3E5E9),        // inverseSurface
+        Color(0xFF101318),        // inverseOnSurface
+        Color(0xFFF0A8A0),        // error
+        Color(0xFF3C0E08),        // onError
+        Color(0xFF6B1A14),        // errorContainer
+        Color(0xFFFFDAD8),        // onErrorContainer
+        Color(0xFF8A9099),        // outline
+        Color(0xFF61666D),        // outlineVariant
+        Color(0xFF000000)         // scrim
+    ) else lightColorScheme(
         Color(0xFF2A5BD7),        // primary
         Color(0xFFFFFFFF),        // onPrimary
         Color(0xFFD9E3FF),        // primaryContainer
@@ -629,7 +673,7 @@ fun AppTheme(content: @Composable () -> Unit) {
         Color(0xFF421011),        // onErrorContainer
         Color(0xFF757881),        // outline
         Color(0xFFC3C7D1),        // outlineVariant
-        Color(0xFF000000)        // scrim
+        Color(0xFF000000)         // scrim
     )
 
     MaterialTheme(
