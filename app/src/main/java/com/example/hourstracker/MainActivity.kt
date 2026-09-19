@@ -2,13 +2,17 @@ package com.example.hourstracker
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.DatePickerDialog
 import android.content.ContentValues
 import android.content.Context
 import android.content.SharedPreferences
 import android.database.Cursor
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.pdf.PdfDocument
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
@@ -28,9 +32,12 @@ import com.example.hourstracker.model.WorkSession
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.WeekFields
+import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -593,6 +600,7 @@ private fun stopClock(jobSiteId: Int) {
 
         col.addView(drawerButton("＋ Add Project") { closeDrawer(); showAddProject() })
         if (jobSites.isNotEmpty()) col.addView(drawerButton("Manage Projects") { closeDrawer(); showManageProjects() })
+        col.addView(drawerButton("⤓ Export Date Range") { closeDrawer(); showExportRange() })
         col.addView(drawerButton(if (isDark) "☀ Light mode" else "🌙 Dark mode") { toggleDark() })
         return panel
     }
@@ -768,7 +776,7 @@ private fun stopClock(jobSiteId: Int) {
                 val siteSessions = sessions.filter { it.jobSiteId == site.id }.sortedWith(compareBy({ it.date }, { it.startTime }))
                 val safeName = site.name.replace("/", "-").replace("\\", "-").trim() + ".xlsx"
                 val file = File(dir, safeName)
-                FileOutputStream(file).use { it.write(buildXlsx(buildRows(siteSessions))) }
+                FileOutputStream(file).use { it.write(buildXlsxSheets(listOf("Session" to buildRows(siteSessions)))) }
             }
             statusMessage = "Files written to Downloads/HoursTracker ✓"
         } catch (e: Exception) {
@@ -778,69 +786,332 @@ private fun stopClock(jobSiteId: Int) {
     }
 
     private fun buildRows(rows: List<WorkSession>): List<List<String>> {
-        val out = mutableListOf(listOf("Date", "Start", "End", "Break (min)", "Worked (min)", "Notes"))
-        rows.forEach { s ->
-            val worked = durationMinutes(s.startTime, s.endTime) - s.breakMinutes
-            out.add(listOf(s.date, s.startTime, s.endTime, s.breakMinutes.toString(), worked.toString(), s.notes ?: ""))
-        }
-        return out
-    }
-
-    private fun durationMinutes(start: String, end: String): Int {
-        val sm = LocalTime.parse(start).toSecondOfDay()
-        val em = LocalTime.parse(end).toSecondOfDay()
-        var diff = em - sm
-        if (diff < 0) diff += 24 * 3600
-        return diff / 60
-    }
-
-    private fun buildXlsx(rows: List<List<String>>): ByteArray {
-        val bos = ByteArrayOutputStream()
-        ZipOutputStream(bos).use { zos ->
-            zos.putNextEntry(ZipEntry("[Content_Types].xml"))
-            zos.write(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
-                "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
-                "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
-                "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" +
-                "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" +
-                "</Types>").toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-            zos.putNextEntry(ZipEntry("_rels/.rels"))
-            zos.write(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
-                "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>" +
-                "</Relationships>").toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-            zos.putNextEntry(ZipEntry("xl/workbook.xml"))
-            zos.write(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
-                "<sheets><sheet name=\"Session\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>").toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-            zos.putNextEntry(ZipEntry("xl/_rels/workbook.xml.rels"))
-            zos.write(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
-                "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>" +
-                "</Relationships>").toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
-            val sb = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
-            sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>")
-            rows.forEachIndexed { i, row ->
-                val r = i + 1
-                sb.append("<row r=\"$r\">")
-                row.forEachIndexed { ci, cell ->
-                    val col = ('A'.code + ci).toChar()
-                    sb.append("<c r=\"$col$r\" t=\"inlineStr\"><is><t>").append(xmlEscape(cell)).append("</t></is></c>")
-                }
-                sb.append("</row>")
+            val out = mutableListOf(listOf("Date", "Start", "End", "Break (min)", "Worked (min)", "Notes"))
+            rows.forEach { s ->
+                val worked = durationMinutes(s.startTime, s.endTime) - s.breakMinutes
+                out.add(listOf(s.date, s.startTime, s.endTime, s.breakMinutes.toString(), worked.toString(), s.notes ?: ""))
             }
-            sb.append("</sheetData></worksheet>")
-            zos.putNextEntry(ZipEntry("xl/worksheets/sheet1.xml"))
-            zos.write(sb.toString().toByteArray(Charsets.UTF_8))
-            zos.closeEntry()
+            return out
         }
-        return bos.toByteArray()
-    }
+
+        private fun durationMinutes(start: String, end: String): Int {
+            val sm = LocalTime.parse(start).toSecondOfDay()
+            val em = LocalTime.parse(end).toSecondOfDay()
+            var diff = em - sm
+            if (diff < 0) diff += 24 * 3600
+            return diff / 60
+        }
+
+        private fun hhMm(totalMin: Int): String {
+            val h = totalMin / 60
+            val m = totalMin % 60
+            return "${h}:${String.format(Locale.US, "%02d", m)}"
+        }
+
+        // ==================== DATE-RANGE EXPORT ====================
+
+        private fun showExportRange() {
+            val opts = listOf(
+                "This week" to { rangeForPreset("thisweek") },
+                "Last week" to { rangeForPreset("lastweek") },
+                "This month" to { rangeForPreset("thismonth") },
+                "Last month" to { rangeForPreset("lastmonth") },
+                "Last 30 days" to { rangeForPreset("30days") },
+                "All time" to { rangeForPreset("all") },
+                "Custom range…" to { null }
+            )
+            AlertDialog.Builder(this)
+                .setTitle("Export date range")
+                .setItems(opts.map { it.first }.toTypedArray()) { _, which ->
+                    val rst = opts[which].second()
+                    if (which == opts.size - 1) showCustomRangePicker()
+                    else rst?.let { exportRange(it.first, it.second) }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        // Inclusive [from, to] as ISO dates for the given display preset.
+        private fun rangeForPreset(key: String): Pair<String, String> {
+            val today = LocalDate.now()
+            return when (key) {
+                "thisweek" -> {
+                    val monday = today.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+                    monday.toString() to monday.plusDays(6).toString()
+                }
+                "lastweek" -> {
+                    val monday = today.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+                    monday.minusWeeks(1).toString() to monday.minusDays(1).toString()
+                }
+                "thismonth" -> today.withDayOfMonth(1).toString() to today.withDayOfMonth(today.lengthOfMonth()).toString()
+                "lastmonth" -> {
+                    val first = today.withDayOfMonth(1).minusMonths(1)
+                    first.toString() to first.withDayOfMonth(first.lengthOfMonth()).toString()
+                }
+                "30days" -> today.minusDays(29).toString() to today.toString()
+                else -> {
+                    val all = sessions.map { it.date }.sorted()
+                    (if (all.isEmpty()) today.toString() else all.first()) to
+                        (if (all.isEmpty()) today.toString() else all.last())
+                }
+            }
+        }
+
+        private fun showCustomRangePicker() {
+            // Chain two DatePickerDialogs: pick start, then pick end, then export.
+            val today = LocalDate.now()
+            val pickEnd = { start: LocalDate ->
+                DatePickerDialog(this, { _, y, mo, d ->
+                    val end = LocalDate.of(y, mo + 1, d)
+                    if (end.isBefore(start)) {
+                        statusMessage = "End date can't be before start date"
+                        renderAll()
+                    } else {
+                        exportRange(start.toString(), end.toString())
+                    }
+                }, today.year, today.monthValue - 1, today.dayOfMonth).show()
+            }
+            DatePickerDialog(this, { _, y, mo, d ->
+                pickEnd(LocalDate.of(y, mo + 1, d))
+            }, today.year, today.monthValue - 1, today.dayOfMonth).show()
+        }
+
+        /**
+         * Builds the date-range xlsx + matching PDF and writes both to
+         * Downloads/HoursTracker/. Summary sheet = per-project totals with an
+         * hh:mm grand total; By Week sheet = each project's weekly hh:mm totals
+         * (weeks start Monday) plus a per-week grand total row.
+         */
+        private fun exportRange(from: String, to: String) {
+            try {
+                val inRange = sessions.filter { it.date >= from && it.date <= to }
+                if (inRange.isEmpty()) { statusMessage = "No sessions in range"; renderAll(); return }
+                val siteName = { id: Int -> jobSites.find { it.id == id }?.name ?: "Unknown" }
+
+                // Summary rows: one per project + grand total.
+                val bySite = inRange.groupBy { it.jobSiteId }
+                    .map { (id, rows) -> Triple(siteName(id), rows.sumOf { workedMinutes(it) }, id) }
+                    .sortedBy { it.first }
+                val grandTotal = bySite.sumOf { it.second }
+                val summaryRows = mutableListOf<List<String>>(listOf("Project", "Hours"))
+                bySite.forEach { summaryRows.add(listOf(it.first, hhMm(it.second))) }
+                summaryRows.add(listOf("TOTAL", hhMm(grandTotal)))
+
+                // By-week rows: project x week-start(Monday) -> hours, per-week grand total row.
+                val weekRows = mutableListOf<List<String>>(listOf("Project", "Week of", "Week #", "Hours"))
+                val byWeek = inRange.groupBy { mondayOf(it.date) }.toSortedMap()
+                val weeksByProject = mutableMapOf<Int, MutableMap<String, Int>>()
+                inRange.forEach { s ->
+                    val w = mondayOf(s.date)
+                    weeksByProject.getOrPut(s.jobSiteId) { mutableMapOf() }[w] =
+                        (weeksByProject[s.jobSiteId]?.get(w) ?: 0) + workedMinutes(s)
+                }
+                weeksByProject.toList().sortedBy { siteName(it.first) }.forEach { (pid, weeks) ->
+                    weeks.toSortedMap().forEach { (w, mins) ->
+                        weekRows.add(listOf(siteName(pid), w, weekNumber(w).toString(), hhMm(mins)))
+                    }
+                    val total = weeks.values.sum()
+                    weekRows.add(listOf(siteName(pid), "— Total —", "", hhMm(total)))
+                }
+                byWeek.forEach { (w, rows) ->
+                    val total = rows.sumOf { workedMinutes(it) }
+                    weekRows.add(listOf("★ Week total", w, "", hhMm(total)))
+                }
+
+                // Sessions sheet: raw detail in range.
+                val sessionRows = buildRows(inRange.sortedWith(compareBy({ it.date }, { it.startTime })))
+
+                val label = "${from}_to_${to}"
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HoursTracker")
+                dir.mkdirs()
+                val xlsFile = File(dir, "Summary_$label.xlsx")
+                FileOutputStream(xlsFile).use { it.write(buildXlsxSheets(listOf(
+                    "Summary" to summaryRows,
+                    "By Week" to weekRows,
+                    "Sessions" to sessionRows
+                ))) }
+                val pdfFile = File(dir, "Summary_$label.pdf")
+                FileOutputStream(pdfFile).use { it.write(buildPdf(from, to, summaryRows, weekRows)) }
+                statusMessage = "Exported $from → $to (xlsx + pdf) ✓"
+            } catch (e: Exception) {
+                statusMessage = "Export FAILED: ${e.message}"
+            }
+            renderAll()
+        }
+
+        private fun weekNumber(mondayIso: String): Int =
+                LocalDate.parse(mondayIso).get(WeekFields.ISO.weekOfWeekBasedYear())
+
+            // ISO date string for the Monday of the week containing the given ISO date.
+            private fun mondayOf(isoDate: String): String =
+                LocalDate.parse(isoDate).with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).toString()
+
+        private fun buildXlsxSheets(sheets: List<Pair<String, List<List<String>>>>): ByteArray {
+            val bos = ByteArrayOutputStream()
+            ZipOutputStream(bos).use { zos ->
+                zos.putNextEntry(ZipEntry("[Content_Types].xml"))
+                val ct = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+                    "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+                    "<Default Extension=\"xml\" ContentType=\"application/xml\"/>")
+                sheets.indices.forEach { i ->
+                    ct.append("<Override PartName=\"/xl/worksheets/sheet${i + 1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>")
+                }
+                ct.append("<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>")
+                zos.write(ct.toString().toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("_rels/.rels"))
+                zos.write(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+                    "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>" +
+                    "</Relationships>").toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("xl/workbook.xml"))
+                val wb = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>")
+                sheets.indices.forEach { i ->
+                    wb.append("<sheet name=\"").append(xmlEscape(sheets[i].first)).append("\" sheetId=\"${i + 1}\" r:id=\"rId${i + 1}\"/>")
+                }
+                wb.append("</sheets></workbook>")
+                zos.write(wb.toString().toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("xl/_rels/workbook.xml.rels"))
+                val wr = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">")
+                sheets.indices.forEach { i ->
+                    wr.append("<Relationship Id=\"rId${i + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet${i + 1}.xml\"/>")
+                }
+                wr.append("</Relationships>")
+                zos.write(wr.toString().toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+
+                sheets.forEachIndexed { si, (_, rows) ->
+                    zos.putNextEntry(ZipEntry("xl/worksheets/sheet${si + 1}.xml"))
+                    val sb = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+                        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>")
+                    rows.forEachIndexed { i, row ->
+                        val r = i + 1
+                        sb.append("<row r=\"$r\">")
+                        row.forEachIndexed { ci, cell ->
+                            val col = ('A'.code + ci).toChar()
+                            sb.append("<c r=\"$col$r\" t=\"inlineStr\"><is><t>").append(xmlEscape(cell)).append("</t></is></c>")
+                        }
+                        sb.append("</row>")
+                    }
+                    sb.append("</sheetData></worksheet>")
+                    zos.write(sb.toString().toByteArray(Charsets.UTF_8))
+                    zos.closeEntry()
+                }
+            }
+            return bos.toByteArray()
+        }
+
+        /**
+         * Renders the summary + weekly tables into a multi-page PDF via the native
+         * android.graphics.pdf.PdfDocument API (no external dependencies).
+         */
+        private fun buildPdf(from: String, to: String, summary: List<List<String>>, byWeek: List<List<String>>): ByteArray {
+            val doc = PdfDocument()
+            val pageInfo = PdfDocument.PageInfo.Builder(612, 792, 1).create()
+            val bos = ByteArrayOutputStream()
+            try {
+                var pw = PdfPageWriter(doc, pageInfo)
+
+                // --- Page: Summary ---
+                pw = pw.newPage()
+                pw.heading("Hours Tracker — Summary")
+                pw.subhead("Range: $from  →  $to")
+                pw.space()
+                pw.table(summary, columns = intArrayOf(420, 100))
+                pw.closePage()
+
+                // --- Page: By Week ---
+                pw = pw.newPage()
+                pw.heading("Hours by Week (weeks start Monday)")
+                pw.subhead("Range: $from  →  $to")
+                pw.space()
+                pw.table(byWeek, columns = intArrayOf(200, 220, 90, 90))
+                pw.closePage()
+
+                doc.writeTo(bos)
+            } finally {
+                doc.close()
+            }
+            return bos.toByteArray()
+        }
+
+        /** Helper to lay out content on PdfDocument pages with simple pagination. */
+        private inner class PdfPageWriter(private val doc: PdfDocument, private val pageInfo: PdfDocument.PageInfo) {
+            private var canvas: Canvas? = null
+            private var page: PdfDocument.Page? = null
+            private var y = 0f
+            private val title = Paint().apply { color = Color.BLACK; textSize = 20f; isFakeBoldText = true }
+            private val sub = Paint().apply { color = Color.DKGRAY; textSize = 12f }
+            private val head = Paint().apply { color = Color.BLACK; textSize = 11f; isFakeBoldText = true }
+            private val body = Paint().apply { color = Color.BLACK; textSize = 11f }
+            private val band = Paint().apply { color = 0xFFE9E9EF.toInt(); style = Paint.Style.FILL }
+            private val rule = Paint().apply { color = 0xFFB0B0B8.toInt(); style = Paint.Style.STROKE; strokeWidth = 1f }
+            private val rowH = 22f
+            private val leftMargin = 48f
+            private val rightMargin = 48f
+
+            private fun ensureSpace(need: Float) {
+                if (canvas != null && y + need > pageInfo.pageHeight - 40f) newPage()
+            }
+
+            /** Finish the current page (if any) and start a fresh one. */
+            fun newPage(): PdfPageWriter {
+                page?.let { doc.finishPage(it) }
+                page = doc.startPage(pageInfo)
+                canvas = page!!.canvas
+                y = 40f
+                return this
+            }
+
+            fun heading(t: String) { canvas?.drawText(t, leftMargin, y, title); y += 26f }
+            fun subhead(t: String) { canvas?.drawText(t, leftMargin, y, sub); y += 18f }
+            fun space() { y += 10f }
+
+            fun table(rows: List<List<String>>, columns: IntArray) {
+                var totalW = 0f
+                for (c in columns) totalW += c.toFloat()
+                val scale = (pageInfo.pageWidth.toFloat() - leftMargin - rightMargin) / totalW
+                val widths = FloatArray(columns.size)
+                for (ci in widths.indices) widths[ci] = columns[ci].toFloat() * scale
+                val x0 = leftMargin
+                rows.forEachIndexed { idx, row ->
+                    ensureSpace(rowH)
+                    // zebra banding
+                    if (idx > 0 && idx % 2 == 0) {
+                        canvas?.drawRect(x0, y - rowH + 4, x0 + widths.sum(), y + 4, band)
+                    }
+                    var colX = x0
+                    row.forEachIndexed { ci, cell ->
+                        val p = if (idx == 0 || ci == row.size - 1) head else body
+                        // right-align the numeric last column
+                        if (ci == row.size - 1 && row.size > 1) {
+                            val tw = p.measureText(cell)
+                            canvas?.drawText(cell, colX + widths[ci] - tw - 6, y, p)
+                        } else {
+                            canvas?.drawText(cell, colX + 6, y, p)
+                        }
+                        colX += widths[ci]
+                    }
+                    canvas?.drawLine(x0, y + 4, x0 + widths.sum(), y + 4, rule)
+                    y += rowH
+                }
+            }
+
+            /** Finish the current page so it can be written out. */
+            fun closePage() {
+                page?.let { doc.finishPage(it) }
+                page = null
+                canvas = null
+            }
+        }
 
     private fun xmlEscape(s: String): String = s
         .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
