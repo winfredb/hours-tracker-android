@@ -1,26 +1,40 @@
 package com.example.hourstracker.view
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.hourstracker.model.JobSite
 import com.example.hourstracker.model.WorkSession
 import com.example.hourstracker.viewmodel.HoursViewModel
@@ -39,6 +53,14 @@ fun HoursTrackerScreen(
     var editStartTime by remember { mutableStateOf("08:00") }
     var editEndTime by remember { mutableStateOf("17:00") }
     var editDate by remember { mutableStateOf(java.time.LocalDate.now().toString()) }
+    var pendingStop by remember { mutableStateOf(false) }
+    var stopBreakMinutes by remember { mutableStateOf("0") }
+
+    val clockRunning by viewModel.clockRunning.collectAsState()
+    val clockPaused by viewModel.clockPaused.collectAsState()
+    val startedAt by viewModel.startedAt.collectAsState()
+    val elapsedSec by viewModel.elapsedSeconds.collectAsState()
+    val statusMessage by viewModel.statusMessage.collectAsState()
 
     Column(
         modifier = Modifier
@@ -46,6 +68,79 @@ fun HoursTrackerScreen(
             .fillMaxSize()
     ) {
         Text("Hours Tracker")
+
+        // Large orange halo button: Start when idle, Pause/Resume when running.
+        // Smaller square Stop button appears below it while the clock runs.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp, bottom = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                if (!clockRunning) "Not working"
+                else if (clockPaused) "Paused since $startedAt"
+                else "Working since $startedAt",
+                style = MaterialTheme.typography.titleMedium
+            )
+
+            if (clockRunning) {
+                Text(
+                    formatElapsedSec(elapsedSec),
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = if (clockPaused) MaterialTheme.colorScheme.outline
+                    else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                )
+            }
+
+            // Big orange halo — Start when idle, Pause/Resume when running
+            Box(
+                modifier = Modifier
+                    .size(200.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFFF8C00))
+                    .clickable {
+                        if (clockRunning) {
+                            if (clockPaused) viewModel.resumeClock() else viewModel.pauseClock()
+                        } else {
+                            viewModel.startClock()
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (!clockRunning) "▶ Start"
+                    else if (clockPaused) "▶ Resume"
+                    else "⏸ Pause",
+                    fontSize = 28.sp,
+                    color = Color.White
+                )
+            }
+
+            // Smaller square Stop button, only while running
+            if (clockRunning) {
+                Spacer(Modifier.height(16.dp))
+                Box(
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFFD32F2F))
+                        .clickable {
+                            stopBreakMinutes = "0"
+                            pendingStop = true
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("■ Stop", fontSize = 15.sp, color = Color.White)
+                }
+            }
+        }
+
+        // Save status feedback
+        if (statusMessage.isNotEmpty()) {
+            Text(statusMessage, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
+        }
 
         // Date range filter
         OutlinedTextField(
@@ -79,20 +174,43 @@ fun HoursTrackerScreen(
             )
         }
 
-        // Action buttons
-        Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-            Button(onClick = {
-                val outputPath = "/sdcard/HoursTracker/pay_period.pdf"
-                viewModel.exportPdf(outputPath, byDate, toDate)
-            }) {
-                Text("Export PDF for Period")
-            }
-            Spacer(Modifier.width(8.dp))
-            FloatingActionButton(onClick = {
-                viewModel.addJobSite("New Job Site", null)
-            }) {
-                Text("+")
-            }
+        // Add job site (PDFs now auto-save to their own folder on each Stop)
+        FloatingActionButton(onClick = {
+            viewModel.addJobSite("New Job Site", null)
+        }) {
+            Text("+")
+        }
+
+        // Stop-clock dialog with break minutes
+        if (pendingStop) {
+            AlertDialog(
+                onDismissRequest = { pendingStop = false },
+                confirmButton = {
+                    Button(onClick = {
+                        viewModel.stopClock(stopBreakMinutes.toIntOrNull() ?: 0)
+                        pendingStop = false
+                    }) {
+                        Text("Stop & Save")
+                    }
+                },
+                dismissButton = {
+                    Button(onClick = { pendingStop = false }) {
+                        Text("Continue Working")
+                    }
+                },
+                title = { Text("Stop Work Clock") },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                        Text("Total elapsed: ${formatElapsedSec(elapsedSec)}")
+                        OutlinedTextField(
+                            value = stopBreakMinutes,
+                            onValueChange = { stopBreakMinutes = it },
+                            label = { Text("Break minutes") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            )
         }
 
         // Edit session dialog
@@ -180,4 +298,14 @@ fun SessionsList(
             }
         }
     }
+}
+
+private fun formatElapsedSec(totalSeconds: Long): String {
+    val sec = totalSeconds
+    val h = sec / 3600
+    val m = (sec % 3600) / 60
+    val ss = sec % 60
+    if (h > 0) return "${h}h ${m}m ${ss}s"
+    if (m > 0) return "${m}m ${ss}s"
+    return "${ss}s"
 }
