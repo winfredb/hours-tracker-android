@@ -350,7 +350,7 @@ private fun stopClock(jobSiteId: Int) {
         column.addView(stateLbl, lpCenter)
 
         val wrap = FrameLayout(this)
-        wrap.layoutParams = LinearLayout.LayoutParams(dp(224), dp(224)).apply { gravity = Gravity.CENTER_HORIZONTAL }
+        wrap.layoutParams = LinearLayout.LayoutParams(dp(224), dp(224)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(48) }
 
         val haloBack = GradientDrawable().apply { setShape(GradientDrawable.OVAL); setColor(0x24FF6D00) }
         val halo = View(this).apply { background = haloBack }
@@ -384,14 +384,13 @@ private fun stopClock(jobSiteId: Int) {
             val stopBtn = TextView(this).apply {
                 text = "■ Stop"; textSize = 16f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
                 setTypeface(null, Typeface.BOLD)
-                background = rounded(0xFFFF4038.toInt(), 18)
-                setPadding(dp(28), dp(16), dp(28), dp(16))
+                background = rounded(0xFFFF4038.toInt(), 8)
                 setOnClickListener {
                     clockPaused = true
                     showStopPicker()
                 }
             }
-            column.addView(stopBtn, LinearLayout.LayoutParams(dp(140), dp(52)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+            column.addView(stopBtn, LinearLayout.LayoutParams(dp(200), dp(48)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         }
 
         updateClockViews()
