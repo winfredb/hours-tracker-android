@@ -48,6 +48,7 @@ class MainActivity : Activity() {
     private lateinit var db: HoursDb
     private lateinit var prefs: SharedPreferences
     private var isDark = false
+    private var themeMode = "system" // "light" | "dark" | "system"
 
     private var clockRunning = false
     private var clockPaused = false
@@ -79,7 +80,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         db = HoursDb(this)
         prefs = getSharedPreferences("hours_tracker", Context.MODE_PRIVATE)
-        isDark = prefs.getBoolean("dark", false)
+        themeMode = prefs.getString("theme", "system") ?: "system"
+        isDark = resolveDark()
         // Restore the running clock from persisted wall-clock state so the timer
         // keeps accruing even across process death / relaunch.
         restoreClockState()
@@ -101,6 +103,16 @@ class MainActivity : Activity() {
         super.onDestroy()
         stopTicker()
         db.close()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // In System (auto) mode, follow the device's light/dark switch live.
+        if (themeMode == "system") {
+            isDark = resolveDark()
+            renderAll()
+            if (drawerOpen) openDrawer()
+        }
     }
 
     // ==================== THEME ====================
@@ -411,6 +423,10 @@ private fun stopClock(jobSiteId: Int) {
             column.addView(stopBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         }
 
+        // Add Task button, always visible under the clock/stop controls
+        column.addView(drawerButton("＋ Add Task") { showAddSession() },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(20) })
+
         updateClockViews()
 
         // ---- status ----
@@ -583,7 +599,6 @@ private fun stopClock(jobSiteId: Int) {
 
             sessions.forEach { s -> col.addView(sessionCard(s)) }
         }
-        col.addView(drawerButton("＋ Add Task") { closeDrawer(); showAddSession() })
         return col
     }
 
@@ -636,8 +651,8 @@ private fun stopClock(jobSiteId: Int) {
 
         col.addView(drawerButton("＋ Add Project") { closeDrawer(); showAddProject() })
         if (jobSites.isNotEmpty()) col.addView(drawerButton("Manage Projects") { closeDrawer(); showManageProjects() })
-        col.addView(drawerButton("⤓ Export Date Range") { closeDrawer(); showExportRange() })
-        col.addView(drawerButton(if (isDark) "☀ Light mode" else "🌙 Dark mode") { toggleDark() })
+        col.addView(drawerButton("Export Date Range") { closeDrawer(); showExportRange() })
+        col.addView(drawerButton(themeLabel()) { toggleDark() })
         }
 
         // footer, pinned to the bottom of the drawer
@@ -658,11 +673,41 @@ private fun stopClock(jobSiteId: Int) {
         setOnClickListener { onClick() }
     }
 
+    // Current effective dark state from the selected mode (System follows the device).
+    private fun resolveDark(): Boolean = when (themeMode) {
+        "dark" -> true
+        "light" -> false
+        else -> isSystemDark()
+    }
+
+    private fun isSystemDark(): Boolean {
+        val mode = resources.configuration.uiMode
+        val mask = android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        return (mode and mask) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+    }
+
+    private fun themeLabel(): String = when (themeMode) {
+        "dark" -> "Dark"
+        "light" -> "Light"
+        else -> "System (auto)"
+    }
+
     private fun toggleDark() {
-        isDark = !isDark
-        prefs.edit().putBoolean("dark", isDark).apply()
-        renderAll()
-        if (drawerOpen) openDrawer()
+        val labels = arrayOf("Light", "Dark", "System (auto)")
+        val modes = arrayOf("light", "dark", "system")
+        var selected = when (themeMode) { "dark" -> 1; "light" -> 0; else -> 2 }
+        AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+            .setTitle("Theme")
+            .setSingleChoiceItems(labels, selected) { _, w -> selected = w }
+            .setPositiveButton("OK") { _, _ ->
+                themeMode = modes[selected]
+                prefs.edit().putString("theme", themeMode).apply()
+                isDark = resolveDark()
+                renderAll()
+                if (drawerOpen) openDrawer()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // ==================== DIALOGS ====================
