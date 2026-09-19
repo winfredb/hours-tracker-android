@@ -34,8 +34,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -94,24 +92,11 @@ fun HoursTrackerScreen(
 
     AppTheme(dark = isDark) {
         Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                TopAppBar(
-                    title = { Text("Hours Tracker", fontWeight = FontWeight.Bold) },
-                    actions = {
-                        IconButton(onClick = { showProjectsDrawer = true }) {
-                            Icon(Icons.Filled.Menu, contentDescription = "Projects")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent
-                    )
-                )
-
-                Column(
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .fillMaxSize()
-                ) {
+            Column(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .fillMaxSize()
+            ) {
                     // Large gradient halo button: Start when idle, Pause/Resume when running.
                     Column(
                         modifier = Modifier
@@ -303,6 +288,15 @@ fun HoursTrackerScreen(
                         }
                     }
                 }
+
+            // Floating project-menu button
+            IconButton(
+                onClick = { showProjectsDrawer = true },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+            ) {
+                Icon(Icons.Filled.Menu, contentDescription = "Projects")
             }
 
             // Scrim behind the drawer
