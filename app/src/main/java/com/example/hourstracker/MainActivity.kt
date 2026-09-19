@@ -81,6 +81,12 @@ class MainActivity : Activity() {
     private val density get() = resources.displayMetrics.density
     private fun dp(v: Int): Int = (v * density).toInt()
 
+    // height of the system status bar so top-anchored UI clears it
+    private val statusBarTop: Int by lazy {
+        val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        if (resId > 0) resources.getDimensionPixelSize(resId) else 0
+    }
+
     private val bgColor get() = if (isDark) 0xFF101318.toInt() else 0xFFF7F8FB.toInt()
     private val surfaceColor get() = if (isDark) 0xFF101318.toInt() else 0xFFF7F8FB.toInt()
     private val surfaceVariantColor get() = if (isDark) 0xFF23262E.toInt() else 0xFFE6E9F2.toInt()
@@ -255,12 +261,12 @@ class MainActivity : Activity() {
     private fun renderAll() { buildLayout() }
 
     private fun buildLayout() {
-        val root = FrameLayout(this).apply { setBackgroundColor(bgColor); setPadding(0, dp(10), 0, 0) }
+        val root = FrameLayout(this).apply { setBackgroundColor(bgColor); setPadding(0, statusBarTop + dp(18), 0, 0) }
 
         val scroll = ScrollView(this)
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(4), dp(16), dp(24))
+            setPadding(dp(16), dp(10), dp(16), dp(24))
         }
         scroll.addView(column)
         root.addView(scroll)
