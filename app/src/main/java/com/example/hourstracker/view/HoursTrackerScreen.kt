@@ -61,8 +61,6 @@ fun HoursTrackerScreen(
     jobSites: List<JobSite>,
     sessions: List<WorkSession>
 ) {
-    var byDate by remember { mutableStateOf("") }
-    var toDate by remember { mutableStateOf("") }
     var selectedJobSiteId by remember { mutableStateOf<Int?>(null) }
     var editSessionId by remember { mutableStateOf<Int?>(null) }
     var editBreakMinutes by remember { mutableStateOf("0") }
@@ -185,20 +183,7 @@ fun HoursTrackerScreen(
                     Text(statusMessage, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))
                 }
 
-                // Date range filter
-                OutlinedTextField(
-                    value = byDate,
-                    onValueChange = { byDate = it },
-                    label = { Text("From") },
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-                )
-                OutlinedTextField(
-                    value = toDate,
-                    onValueChange = { toDate = it },
-                    label = { Text("To") },
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-                )
-
+                // Date range filter (removed per request)
                 if (sessions.isEmpty()) {
                     Text("No sessions recorded yet")
                 } else {
