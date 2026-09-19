@@ -39,7 +39,6 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
-import java.time.temporal.WeekFields
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -220,7 +219,7 @@ class MainActivity : Activity() {
         cv.put("notes", session.notes)
         db.writableDatabase.insert("work_sessions", null, cv)
         refreshData(); renderAll()
-        statusMessage = "Saved ✓ ${isoDateDisplay(session.date)} ${session.startTime}-${session.endTime}"
+        statusMessage = "Saved ✓ ${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}"
     }
 
     private fun updateSession(session: WorkSession) {
@@ -527,7 +526,7 @@ private fun stopClock(jobSiteId: Int) {
         // row 2: time range + break + edit/delete
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(10), 0, dp(4)) }
         row2.addView(TextView(this).apply {
-            text = "${session.startTime} → ${session.endTime}"; textSize = 14f; setTextColor(onSurfaceColor)
+            text = "${time12(session.startTime)} → ${time12(session.endTime)}"; textSize = 14f; setTextColor(onSurfaceColor)
         })
         if (session.breakMinutes > 0) {
             val onSec = if (isDark) 0xFFD7E1EE.toInt() else 0xFF1F3045.toInt()
@@ -541,7 +540,7 @@ private fun stopClock(jobSiteId: Int) {
         row2.addView(textAction("Delete") {
             AlertDialog.Builder(this@MainActivity)
                 .setTitle("Delete task?")
-                .setMessage("${isoDateDisplay(session.date)} ${session.startTime}-${session.endTime}")
+                .setMessage("${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}")
                 .setPositiveButton("Delete") { _, _ -> deleteSession(session) }
                 .setNegativeButton("Cancel", null)
                 .show()
@@ -767,23 +766,23 @@ private fun stopClock(jobSiteId: Int) {
         var endH = parseHh(initialEnd); var endM = parseMin(initialEnd)
 
         val start = EditText(this).apply {
-            setText(initialStart); setTextColor(onSurfaceColor)
+            setText(time12(initialStart)); setTextColor(onSurfaceColor)
             isFocusable = false; isClickable = true
             setOnClickListener {
                 TimePickerDialog(this@MainActivity, { _, h, m ->
                     startH = h; startM = m
-                    setText(String.format(Locale.US, "%02d:%02d", h, m))
-                }, startH, startM, true).show()
+                    setText(time12("$h:$m"))
+                }, startH, startM, false).show()
             }
         }
         val end = EditText(this).apply {
-            setText(initialEnd); setTextColor(onSurfaceColor)
+            setText(time12(initialEnd)); setTextColor(onSurfaceColor)
             isFocusable = false; isClickable = true
             setOnClickListener {
                 TimePickerDialog(this@MainActivity, { _, h, m ->
                     endH = h; endM = m
-                    setText(String.format(Locale.US, "%02d:%02d", h, m))
-                }, endH, endM, true).show()
+                    setText(time12("$h:$m"))
+                }, endH, endM, false).show()
             }
         }
         val brk = EditText(this).apply { setText(initialBreak); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER }
@@ -813,7 +812,7 @@ private fun stopClock(jobSiteId: Int) {
             .setView(form)
             .setPositiveButton(confirmLabel) { _, _ ->
                 val rid = jobSites.getOrNull(selectedIdx)?.id ?: 1
-                onSave(date.text.toString(), start.text.toString(), end.text.toString(),
+                onSave(date.text.toString(), time24(start.text.toString()), time24(end.text.toString()),
                     brk.text.toString().toIntOrNull() ?: 0, rid)
             }
             .setNegativeButton("Cancel", null)
@@ -842,6 +841,32 @@ private fun stopClock(jobSiteId: Int) {
     private fun formatMinutesShort(total: Int): String {
         val h = total / 60; val m = total % 60
         return if (h > 0) "${h}h ${m}m" else "${m}m"
+    }
+
+    // 24h "14:30" -> "2:30 PM"; storage stays 24h for LocalTime.parse
+    private fun time12(hm24: String): String {
+        val p = hm24.trim().split(":")
+        if (p.size < 2) return hm24
+        val h = p.getOrNull(0)?.toIntOrNull() ?: 0
+        val m = p.getOrNull(1)?.toIntOrNull() ?: 0
+        val am = h < 12
+        var hh = h % 12; if (hh == 0) hh = 12
+        return "$hh:${String.format(Locale.US, "%02d", m)} ${if (am) "AM" else "PM"}"
+    }
+
+    // "2:30 PM" (or pass-through "14:30") -> 24h "14:30" for storage/parsing
+    private fun time24(s: String): String {
+        val t = s.trim().uppercase()
+        val isPm = t.endsWith("PM"); val isAm = t.endsWith("AM")
+        var core = t
+        if (isAm || isPm) core = t.substring(0, t.length - 2).trim()
+        val p = core.split(":")
+        if (p.size < 2) return s
+        var h = p.getOrNull(0)?.toIntOrNull() ?: 0
+        val m = p.getOrNull(1)?.toIntOrNull() ?: 0
+        if (isPm && h < 12) h += 12
+        if (isAm && h == 12) h = 0
+        return String.format(Locale.US, "%02d:%02d", h, m)
     }
 
     // Display an ISO date (yyyy-MM-dd) as MM/dd/yyyy; falls back to the input
@@ -927,7 +952,7 @@ private fun stopClock(jobSiteId: Int) {
             val out = mutableListOf(listOf("Date", "Start", "End", "Break (min)", "Worked (min)", "Notes"))
             rows.forEach { s ->
                 val worked = durationMinutes(s.startTime, s.endTime) - s.breakMinutes
-                out.add(listOf(isoDateDisplay(s.date), s.startTime, s.endTime, s.breakMinutes.toString(), worked.toString(), s.notes ?: ""))
+                out.add(listOf(isoDateDisplay(s.date), time12(s.startTime), time12(s.endTime), s.breakMinutes.toString(), worked.toString(), s.notes ?: ""))
             }
             return out
         }
@@ -974,12 +999,12 @@ private fun stopClock(jobSiteId: Int) {
             val today = LocalDate.now()
             return when (key) {
                 "thisweek" -> {
-                    val monday = today.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-                    monday.toString() to monday.plusDays(6).toString()
+                    val sunday = today.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.SUNDAY))
+                    sunday.toString() to sunday.plusDays(6).toString()
                 }
                 "lastweek" -> {
-                    val monday = today.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
-                    monday.minusWeeks(1).toString() to monday.minusDays(1).toString()
+                    val sunday = today.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.SUNDAY))
+                    sunday.minusWeeks(1).toString() to sunday.minusDays(1).toString()
                 }
                 "thismonth" -> today.withDayOfMonth(1).toString() to today.withDayOfMonth(today.lengthOfMonth()).toString()
                 "lastmonth" -> {
@@ -1018,7 +1043,7 @@ private fun stopClock(jobSiteId: Int) {
          * Builds the date-range xlsx + matching PDF and writes both to
          * Downloads/HoursTracker/. Summary sheet = per-project totals with an
          * hh:mm grand total; By Week sheet = each project's weekly hh:mm totals
-         * (weeks start Monday) plus a per-week grand total row.
+         * (weeks start Sunday) plus a per-week grand total row.
          */
         private fun exportRange(from: String, to: String) {
             try {
@@ -1035,25 +1060,25 @@ private fun stopClock(jobSiteId: Int) {
                 bySite.forEach { summaryRows.add(listOf(it.first, hhMm(it.second))) }
                 summaryRows.add(listOf("TOTAL", hhMm(grandTotal)))
 
-                // By-week rows: project x week-start(Monday) -> hours, per-week grand total row.
-                val weekRows = mutableListOf<List<String>>(listOf("Project", "Week of", "Week #", "Hours"))
-                val byWeek = inRange.groupBy { mondayOf(it.date) }.toSortedMap()
+                // By-week rows: project x week-start(Sunday) -> hours, per-week grand total row.
+                val weekRows = mutableListOf<List<String>>(listOf("Project", "Week of", "Hours"))
+                val byWeek = inRange.groupBy { sundayOf(it.date) }.toSortedMap()
                 val weeksByProject = mutableMapOf<Int, MutableMap<String, Int>>()
                 inRange.forEach { s ->
-                    val w = mondayOf(s.date)
+                    val w = sundayOf(s.date)
                     weeksByProject.getOrPut(s.jobSiteId) { mutableMapOf() }[w] =
                         (weeksByProject[s.jobSiteId]?.get(w) ?: 0) + workedMinutes(s)
                 }
                 weeksByProject.toList().sortedBy { siteName(it.first) }.forEach { (pid, weeks) ->
                     weeks.toSortedMap().forEach { (w, mins) ->
-                        weekRows.add(listOf(siteName(pid), isoDateDisplay(w), weekNumber(w).toString(), hhMm(mins)))
+                        weekRows.add(listOf(siteName(pid), isoDateDisplay(w), hhMm(mins)))
                     }
                     val total = weeks.values.sum()
-                    weekRows.add(listOf(siteName(pid), "— Total —", "", hhMm(total)))
+                    weekRows.add(listOf(siteName(pid), "— Total —", hhMm(total)))
                 }
                 byWeek.forEach { (w, rows) ->
                     val total = rows.sumOf { workedMinutes(it) }
-                    weekRows.add(listOf("★ Week total", isoDateDisplay(w), "", hhMm(total)))
+                    weekRows.add(listOf("★ Week total", isoDateDisplay(w), hhMm(total)))
                 }
 
                 val label = "${from}_to_${to}"
@@ -1075,12 +1100,9 @@ private fun stopClock(jobSiteId: Int) {
             renderAll()
         }
 
-        private fun weekNumber(mondayIso: String): Int =
-                LocalDate.parse(mondayIso).get(WeekFields.ISO.weekOfWeekBasedYear())
-
-            // ISO date string for the Monday of the week containing the given ISO date.
-            private fun mondayOf(isoDate: String): String =
-                LocalDate.parse(isoDate).with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).toString()
+        // ISO date string for the Sunday of the week containing the given ISO date.
+        private fun sundayOf(isoDate: String): String =
+                LocalDate.parse(isoDate).with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.SUNDAY)).toString()
 
         private fun buildXlsxSheets(sheets: List<Pair<String, List<List<String>>>>): ByteArray {
             val bos = ByteArrayOutputStream()
@@ -1166,10 +1188,9 @@ private fun stopClock(jobSiteId: Int) {
 
                 // --- Page: By Week ---
                 pw = pw.newPage()
-                pw.heading("Hours by Week (weeks start Monday)")
                 pw.subhead("Range: ${isoDateDisplay(from)}  →  ${isoDateDisplay(to)}")
                 pw.space()
-                pw.table(byWeek, columns = intArrayOf(200, 220, 90, 90))
+                pw.table(byWeek, columns = intArrayOf(200, 260, 90))
                 pw.closePage()
 
                 doc.writeTo(bos)
