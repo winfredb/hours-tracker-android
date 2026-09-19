@@ -217,7 +217,7 @@ class MainActivity : Activity() {
         cv.put("break_minutes", session.breakMinutes)
         cv.put("notes", session.notes)
         db.writableDatabase.insert("work_sessions", null, cv)
-        refreshData(); renderAll(); exportAll()
+        refreshData(); renderAll()
         statusMessage = "Saved ✓ ${isoDateDisplay(session.date)} ${session.startTime}-${session.endTime}"
     }
 
@@ -230,7 +230,7 @@ class MainActivity : Activity() {
             put("break_minutes", session.breakMinutes)
             db.writableDatabase.update("work_sessions", this, "id=?", arrayOf(session.id.toString()))
         }
-        refreshData(); renderAll(); exportAll()
+        refreshData(); renderAll()
         statusMessage = "Updated ✓ ${isoDateDisplay(session.date)}"
     }
 
@@ -318,6 +318,7 @@ private fun stopClock(jobSiteId: Int) {
     insertSession(WorkSession(id = 0, jobSiteId = jobSiteId, date = today, startTime = start, endTime = end, breakMinutes = 0, notes = "clock"))
     startedAt = ""; segmentStartMs = 0L; accumulatedMs = 0L
     persistClock()
+    exportAll() // xlsx per-project dump is written only when the timer is stopped
     renderAll()
 }
 
@@ -972,20 +973,12 @@ private fun stopClock(jobSiteId: Int) {
                     weekRows.add(listOf("★ Week total", isoDateDisplay(w), "", hhMm(total)))
                 }
 
-                // Sessions sheet: raw detail in range.
-                val sessionRows = buildRows(inRange.sortedWith(compareBy({ it.date }, { it.startTime })))
-
                 val label = "${from}_to_${to}"
-                val xlsPath = writeDownload("Tasks", "Summary_$label.xlsx", buildXlsxSheets(listOf(
-                    "Summary" to summaryRows,
-                    "By Week" to weekRows,
-                    "Sessions" to sessionRows
-                )))
                 val pdfPath = writeDownload("Export", "Summary_$label.pdf", buildPdf(from, to, summaryRows, weekRows))
-                statusMessage = "Exported $from → $to (xlsx + pdf) ✓"
+                statusMessage = "Exported $from → $to (pdf) ✓"
                 AlertDialog.Builder(this)
                     .setTitle("Export complete ✓")
-                    .setMessage("Saved:\n• $xlsPath\n• $pdfPath")
+                    .setMessage("Saved:\n• $pdfPath")
                     .setPositiveButton("OK", null)
                     .show()
             } catch (e: Exception) {
