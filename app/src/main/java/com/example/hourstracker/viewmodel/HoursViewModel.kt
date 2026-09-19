@@ -34,6 +34,9 @@ class HoursViewModel @Inject constructor(
     private val _jobSites: MutableStateFlow<List<JobSite>> = MutableStateFlow(emptyList())
     val jobSites: StateFlow<List<JobSite>> = _jobSites.asStateFlow()
 
+    private val _selectedJobSiteId: MutableStateFlow<Int?> = MutableStateFlow(null)
+    val selectedJobSiteId: StateFlow<Int?> = _selectedJobSiteId.asStateFlow()
+
     private val _sessions: MutableStateFlow<List<WorkSession>> = MutableStateFlow(emptyList())
     val sessions: StateFlow<List<WorkSession>> = _sessions.asStateFlow()
 
@@ -57,9 +60,14 @@ class HoursViewModel @Inject constructor(
         Log.d("HoursTracker", "ViewModel initialized")
     }
 
-    /** Records the current time and starts the work clock. */
+    /** Records the current time and starts the work clock for the selected project. */
     fun startClock() {
         if (_clockRunning.value) return
+        val selectedId = _selectedJobSiteId.value
+        if (selectedId == null) {
+            _statusMessage.value = "Pick a project before starting"
+            return
+        }
         val now = java.time.LocalTime.now()
         _startedAt.value = now.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         _clockRunning.value = true
@@ -75,6 +83,13 @@ class HoursViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /** Selects which project the clock records against. */
+    fun selectJobSite(id: Int) {
+        _selectedJobSiteId.value = id
+        val name = _jobSites.value.find { it.id == id }?.name
+        if (!_clockRunning.value) _statusMessage.value = "Tracking: ${name ?: ""}"
     }
 
     /** Pauses the running clock, keeping the accumulated time so far. */
@@ -95,7 +110,7 @@ class HoursViewModel @Inject constructor(
         val start = _startedAt.value
         val end = java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         val today = java.time.LocalDate.now().toString()
-        val jobSiteId = _jobSites.value.firstOrNull()?.id ?: 1
+        val jobSiteId = _selectedJobSiteId.value ?: 1
         addSession(
             WorkSession(
                 id = 0,
@@ -116,7 +131,11 @@ class HoursViewModel @Inject constructor(
     fun refreshData() {
         viewModelScope.launch {
             try {
-                _jobSites.value = database.jobSiteDao().getAllJobSites().first()
+                val sites = database.jobSiteDao().getAllJobSites().first()
+                _jobSites.value = sites
+                if (_selectedJobSiteId.value == null && sites.isNotEmpty()) {
+                    _selectedJobSiteId.value = sites[0].id
+                }
                 _sessions.value = database.workSessionDao().getAllSessions().first()
                 Log.d("HoursTracker", "refreshData loaded ${_sessions.value.size} sessions")
                 _statusMessage.value = "Loaded ${_sessions.value.size} sessions ✓"
@@ -171,13 +190,55 @@ class HoursViewModel @Inject constructor(
     }
 
     fun addJobSite(name: String, location: String?) {
+        if (name.isBlank()) {
+            _statusMessage.value = "Project name can't be empty"
+            return
+        }
         viewModelScope.launch {
             try {
-                database.jobSiteDao().insertOrReplaceJobSite(0, name, location, "#6750A4")
-                _jobSites.value = database.jobSiteDao().getAllJobSites().first()
-                _statusMessage.value = "Job site added ✓"
+                database.jobSiteDao().insertOrReplaceJobSite(0, name.trim(), location, "#6750A4")
+                val sites = database.jobSiteDao().getAllJobSites().first()
+                _jobSites.value = sites
+                val added = sites.find { it.name == name.trim() }
+                if (added != null) _selectedJobSiteId.value = added.id
+                _statusMessage.value = "Project added ✓"
             } catch (e: Throwable) {
-                _statusMessage.value = "Add job site FAILED: ${e.message}"
+                _statusMessage.value = "Add project FAILED: ${e.message}"
+            }
+        }
+    }
+
+    /** Renames / re-locates an existing project. */
+    fun renameJobSite(id: Int, name: String, location: String?) {
+        if (name.isBlank()) {
+            _statusMessage.value = "Project name can't be empty"
+            return
+        }
+        val site = _jobSites.value.find { it.id == id } ?: return
+        viewModelScope.launch {
+            try {
+                database.jobSiteDao().updateJobSite(id, name.trim(), location?.takeIf { it.isNotBlank() }, site.color)
+                _jobSites.value = database.jobSiteDao().getAllJobSites().first()
+                _statusMessage.value = "Project renamed ✓"
+            } catch (e: Throwable) {
+                _statusMessage.value = "Rename FAILED: ${e.message}"
+            }
+        }
+    }
+
+    /** Deletes a project and unselects it. Sessions referencing it are kept (FK is nullable-safe in export). */
+    fun deleteJobSite(id: Int) {
+        viewModelScope.launch {
+            try {
+                database.jobSiteDao().deleteJobSite(id)
+                val sites = database.jobSiteDao().getAllJobSites().first()
+                _jobSites.value = sites
+                if (_selectedJobSiteId.value == id) {
+                    _selectedJobSiteId.value = sites.firstOrNull()?.id
+                }
+                _statusMessage.value = "Project deleted ✓"
+            } catch (e: Throwable) {
+                _statusMessage.value = "Delete FAILED: ${e.message}"
             }
         }
     }
