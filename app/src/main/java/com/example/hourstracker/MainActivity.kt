@@ -65,9 +65,24 @@ class MainActivity : Activity() {
         db = HoursDb(this)
         prefs = getSharedPreferences("hours_tracker", Context.MODE_PRIVATE)
         isDark = prefs.getBoolean("dark", false)
+        // Restore the running clock across rotation so the timer isn't reset.
+        savedInstanceState?.let {
+            clockRunning = it.getBoolean("clockRunning", false)
+            clockPaused = it.getBoolean("clockPaused", clockRunning)
+            startedAt = it.getString("startedAt") ?: ""
+            elapsedSec = it.getLong("elapsedSec", 0L)
+        }
         refreshData()
         buildLayout()
         startTicker()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean("clockRunning", clockRunning)
+        outState.putBoolean("clockPaused", clockPaused)
+        outState.putString("startedAt", startedAt)
+        outState.putLong("elapsedSec", elapsedSec)
     }
 
     override fun onDestroy() {
