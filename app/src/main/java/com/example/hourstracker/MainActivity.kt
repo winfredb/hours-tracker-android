@@ -58,7 +58,7 @@ class MainActivity : Activity() {
     private var segmentStartMs = 0L
     private var accumulatedMs = 0L
     private var statusMessage = ""
-    private var sessionsExpanded = true
+    private var drawerTab = 0 // 0 = Projects, 1 = Tasks
 
     private var jobSites = mutableListOf<JobSite>()
     private var sessions = mutableListOf<WorkSession>()
@@ -72,6 +72,8 @@ class MainActivity : Activity() {
     private var stateView: TextView? = null
     private var glyphView: TextView? = null
     private var labelView: TextView? = null
+    private var haloButtonView: View? = null
+    private var haloGlowView: View? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -130,6 +132,10 @@ class MainActivity : Activity() {
             } catch (e: Exception) { 0xFF6750A4.toInt() }
         } else 0xFF6750A4.toInt()
     }
+
+    // Dialog theme so the native date/time pickers match the app UI accent colors.
+    private fun pickerDialogThemeId(): Int =
+        if (isDark) R.style.PickerDialogThemeDark else R.style.PickerDialogTheme
 
     private fun rounded(color: Int, radiusDp: Int): GradientDrawable {
         return GradientDrawable().apply {
@@ -364,13 +370,15 @@ private fun stopClock(jobSiteId: Int) {
 
         val haloBack = GradientDrawable().apply { setShape(GradientDrawable.OVAL); setColor(0x24FF6D00) }
         val halo = View(this).apply { background = haloBack }
+        haloGlowView = halo
         wrap.addView(halo, FrameLayout.LayoutParams(dp(224), dp(224), Gravity.CENTER))
 
         val inner = FrameLayout(this).apply {
-            background = ovalGradient(0xFFFFAA00.toInt(), 0xFFFF4D00.toInt())
+            background = ovalGradient(0xFF4CAF50.toInt(), 0xFF2E7D32.toInt())
             isClickable = true
             setOnClickListener { onHaloTap() }
         }
+        haloButtonView = inner
         val innerCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
         val glyph = TextView(this).apply { textSize = 50f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
         val label = TextView(this).apply { textSize = 20f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
@@ -392,15 +400,15 @@ private fun stopClock(jobSiteId: Int) {
         // stop button (while running)
         if (clockRunning) {
             val stopBtn = TextView(this).apply {
-                text = "■ Stop"; textSize = 16f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                text = "■ Stop"; textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
                 setTypeface(null, Typeface.BOLD)
-                background = rounded(0xFFFF4038.toInt(), 8)
+                background = rounded(0xFFFF4038.toInt(), 10)
                 setOnClickListener {
                     clockPaused = true
                     showStopPicker()
                 }
             }
-            column.addView(stopBtn, LinearLayout.LayoutParams(dp(200), dp(48)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+            column.addView(stopBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         }
 
         updateClockViews()
@@ -412,42 +420,6 @@ private fun stopClock(jobSiteId: Int) {
         }
 
         column.addView(View(this).apply { }, LinearLayout.LayoutParams(1, dp(8)))
-
-        // ---- sessions ----
-        val sessionsCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        if (sessions.isEmpty()) {
-            sessionsCol.addView(TextView(this).apply {
-                text = "No tasks recorded yet"; textSize = 14f; setTextColor(onSurfaceVariantColor)
-                gravity = Gravity.CENTER
-            })
-        } else {
-            val totalMinutes = sessions.sumOf { workedMinutes(it) }
-            // summary header
-            val header = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(16), dp(14), dp(16), dp(14))
-                background = rounded(if (isDark) 0xFF1B1F26.toInt() else 0xFFFFFFFF.toInt(), 16)
-                isClickable = true
-                setOnClickListener { sessionsExpanded = !sessionsExpanded; renderAll() }
-            }
-            header.addView(dotView(primaryColor, 10))
-            val hi = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
-            hi.addView(TextView(this).apply { text = "Tasks"; textSize = 16f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
-            hi.addView(TextView(this).apply { text = "${sessions.size} tasks recorded"; textSize = 12f; setTextColor(onSurfaceVariantColor) })
-            header.addView(hi, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            header.addView(pill("Total ${formatMinutesShort(totalMinutes)}", primaryContainerColor, onPrimaryContainerColor))
-            header.addView(TextView(this).apply {
-                text = if (sessionsExpanded) "▾" else "▸"
-                textSize = 18f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceVariantColor); setPadding(dp(10), 0, 0, 0)
-            })
-            sessionsCol.addView(header)
-
-            if (sessionsExpanded) {
-                sessions.forEach { s -> sessionsCol.addView(sessionCard(s)) }
-            }
-        }
-        column.addView(sessionsCol)
-        column.addView(drawerButton("＋ Add Task") { showAddSession() })
 
         // ---- floating ☰ (top-right) ----
         val menuBtn = TextView(this).apply {
@@ -480,8 +452,18 @@ private fun stopClock(jobSiteId: Int) {
     private var drawerPanel: View? = null
 
     private fun updateClockViews() {
+        stateView?.visibility = if (!clockRunning) View.GONE else View.VISIBLE
+        // button colors: green idle/stopped, yellow/gold while running (orange when paused)
+        val (b1, b2) = when {
+            !clockRunning -> 0xFF4CAF50.toInt() to 0xFF2E7D32.toInt()   // green
+            clockPaused -> 0xFFFF6D00.toInt() to 0xFFEF4D00.toInt()     // orange (paused)
+            else -> 0xFFFFC107.toInt() to 0xFFFF9800.toInt()            // yellow/gold
+        }
+        haloButtonView?.background = ovalGradient(b1, b2)
+        haloGlowView?.background = GradientDrawable().apply { setShape(GradientDrawable.OVAL)
+            setColor(if (!clockRunning) 0x242E7D32 else 0x24FF8F00) }
         stateView?.text = when {
-            !clockRunning -> "Idle"
+            !clockRunning -> ""
             clockPaused -> "Paused since $startedAt"
             else -> "Working since $startedAt"
         }
@@ -577,6 +559,34 @@ private fun stopClock(jobSiteId: Int) {
     private fun openDrawer() { drawerScrim?.visibility = View.VISIBLE; drawerPanel?.visibility = View.VISIBLE; drawerOpen = true }
     private fun closeDrawer() { drawerScrim?.visibility = View.GONE; drawerPanel?.visibility = View.GONE; drawerOpen = false }
 
+    // Tasks tab content: total header + session cards + Add Task button.
+    private fun buildTasksTab(): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        if (sessions.isEmpty()) {
+            col.addView(TextView(this).apply {
+                text = "No tasks recorded yet"; textSize = 14f; setTextColor(onSurfaceVariantColor)
+                gravity = Gravity.CENTER; setPadding(0, dp(20), 0, dp(20))
+            })
+        } else {
+            val totalMinutes = sessions.sumOf { workedMinutes(it) }
+            val header = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = rounded(surfaceVariantColor, 14)
+            }
+            header.addView(dotView(primaryColor, 10))
+            val hi = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
+            hi.addView(TextView(this).apply { text = "${sessions.size} tasks"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+            header.addView(hi, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            header.addView(pill("Total ${formatMinutesShort(totalMinutes)}", primaryContainerColor, onPrimaryContainerColor))
+            col.addView(header)
+
+            sessions.forEach { s -> col.addView(sessionCard(s)) }
+        }
+        col.addView(drawerButton("＋ Add Task") { closeDrawer(); showAddSession() })
+        return col
+    }
+
     private fun buildDrawer(): View {
         val frame = FrameLayout(this).apply { setBackgroundColor(if (isDark) 0xFF14181D.toInt() else 0xFFFFFFFF.toInt()) }
         val panel = android.widget.ScrollView(this)
@@ -584,6 +594,26 @@ private fun stopClock(jobSiteId: Int) {
         panel.addView(col)
         frame.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
+        // ---- tab bar: Projects | Tasks ----
+        val tabs = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            background = rounded(surfaceVariantColor, 14)
+        }
+        listOf(0 to "Projects", 1 to "Tasks").forEach { (idx, name) ->
+            val active = drawerTab == idx
+            tabs.addView(TextView(this).apply {
+                text = name; textSize = 14f; setTypeface(null, Typeface.BOLD)
+                setTextColor(if (active) onPrimaryContainerColor else onSurfaceVariantColor)
+                gravity = Gravity.CENTER; setPadding(dp(18), dp(10), dp(18), dp(10))
+                background = rounded(if (active) primaryColor else 0x00000000, 12)
+                setOnClickListener { if (drawerTab != idx) { drawerTab = idx; renderAll(); if (drawerOpen) openDrawer() } }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        col.addView(tabs, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(16) })
+
+        if (drawerTab == 1) {
+            col.addView(buildTasksTab())
+        } else {
         col.addView(TextView(this).apply { text = "Projects"; textSize = 22f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
         col.addView(TextView(this).apply { text = "Your job sites"; textSize = 13f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(2), 0, dp(12)) })
 
@@ -608,6 +638,7 @@ private fun stopClock(jobSiteId: Int) {
         if (jobSites.isNotEmpty()) col.addView(drawerButton("Manage Projects") { closeDrawer(); showManageProjects() })
         col.addView(drawerButton("⤓ Export Date Range") { closeDrawer(); showExportRange() })
         col.addView(drawerButton(if (isDark) "☀ Light mode" else "🌙 Dark mode") { toggleDark() })
+        }
 
         // footer, pinned to the bottom of the drawer
         val footer = TextView(this).apply {
@@ -753,7 +784,7 @@ private fun stopClock(jobSiteId: Int) {
             setText(initialDate); setTextColor(onSurfaceColor)
             isFocusable = false; isClickable = true
             setOnClickListener {
-                DatePickerDialog(this@MainActivity, { _, y, m, d ->
+                DatePickerDialog(this@MainActivity, pickerDialogThemeId(), { _, y, m, d ->
                     dateYear = y; dateMonth = m; dateDay = d
                     setText("${String.format(Locale.US, "%02d", m + 1)}/${String.format(Locale.US, "%02d", d)}/$y")
                 }, dateYear, dateMonth, dateDay).show()
@@ -769,7 +800,7 @@ private fun stopClock(jobSiteId: Int) {
             setText(time12(initialStart)); setTextColor(onSurfaceColor)
             isFocusable = false; isClickable = true
             setOnClickListener {
-                TimePickerDialog(this@MainActivity, { _, h, m ->
+                TimePickerDialog(this@MainActivity, pickerDialogThemeId(), { _, h, m ->
                     startH = h; startM = m
                     setText(time12("$h:$m"))
                 }, startH, startM, false).show()
@@ -779,7 +810,7 @@ private fun stopClock(jobSiteId: Int) {
             setText(time12(initialEnd)); setTextColor(onSurfaceColor)
             isFocusable = false; isClickable = true
             setOnClickListener {
-                TimePickerDialog(this@MainActivity, { _, h, m ->
+                TimePickerDialog(this@MainActivity, pickerDialogThemeId(), { _, h, m ->
                     endH = h; endM = m
                     setText(time12("$h:$m"))
                 }, endH, endM, false).show()
@@ -793,7 +824,7 @@ private fun stopClock(jobSiteId: Int) {
         if (selectedIdx < 0) selectedIdx = 0
         val projLbl = TextView(this).apply { text = "Project: ${jobSites.getOrNull(selectedIdx)?.name ?: "?"}"; textSize = 14f; setTextColor(primaryColor); setPadding(0, dp(6), 0, 0) }
         projLbl.setOnClickListener {
-            AlertDialog.Builder(this@MainActivity)
+            AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                 .setTitle("Select Project")
                 .setSingleChoiceItems(if (projNames.isEmpty()) arrayOf("No projects") else projNames, selectedIdx) { _, w -> selectedIdx = w }
                 .setPositiveButton("OK") { _, _ -> projLbl.text = "Project: ${jobSites.getOrNull(selectedIdx)?.name ?: "?"}" }
@@ -807,7 +838,7 @@ private fun stopClock(jobSiteId: Int) {
         }
         form.addView(projLbl)
 
-        AlertDialog.Builder(this)
+        AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
             .setTitle(title)
             .setView(form)
             .setPositiveButton(confirmLabel) { _, _ ->
@@ -1024,7 +1055,7 @@ private fun stopClock(jobSiteId: Int) {
             // Chain two DatePickerDialogs: pick start, then pick end, then export.
             val today = LocalDate.now()
             val pickEnd = { start: LocalDate ->
-                DatePickerDialog(this, { _, y, mo, d ->
+                DatePickerDialog(this, pickerDialogThemeId(), { _, y, mo, d ->
                     val end = LocalDate.of(y, mo + 1, d)
                     if (end.isBefore(start)) {
                         statusMessage = "End date can't be before start date"
@@ -1034,7 +1065,7 @@ private fun stopClock(jobSiteId: Int) {
                     }
                 }, today.year, today.monthValue - 1, today.dayOfMonth).show()
             }
-            DatePickerDialog(this, { _, y, mo, d ->
+            DatePickerDialog(this, pickerDialogThemeId(), { _, y, mo, d ->
                 pickEnd(LocalDate.of(y, mo + 1, d))
             }, today.year, today.monthValue - 1, today.dayOfMonth).show()
         }

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Themed dialog used by the date + time pickers so they match the app UI.
+         App accent (light) = #2A5BD7, surface = #F7F8FB; dark = #9EC3FF / #101318. -->
+    <style name="PickerDialogTheme" parent="@android:style/Theme.Material.Light.Dialog">
+        <item name="android:colorAccent">#2A5BD7</item>
+        <item name="android:colorPrimary">#2A5BD7</item>
+        <item name="android:windowBackground">#F7F8FB</item>
+    </style>
+
+    <style name="PickerDialogThemeDark" parent="@android:style/Theme.Material.Dialog">
+        <item name="android:colorAccent">#9EC3FF</item>
+        <item name="android:colorPrimary">#9EC3FF</item>
+        <item name="android:windowBackground">#101318</item>
+    </style>
+</resources>
