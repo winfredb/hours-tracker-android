@@ -196,11 +196,10 @@ class HoursViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                database.jobSiteDao().insertOrReplaceJobSite(0, name.trim(), location, "#6750A4")
-                val sites = database.jobSiteDao().getAllJobSites().first()
-                _jobSites.value = sites
-                val added = sites.find { it.name == name.trim() }
-                if (added != null) _selectedJobSiteId.value = added.id
+                val newId = database.jobSiteDao()
+                    .insertJobSite(JobSite(name = name.trim(), location = location))
+                _jobSites.value = database.jobSiteDao().getAllJobSites().first()
+                _selectedJobSiteId.value = newId.toInt()
                 _statusMessage.value = "Project added ✓"
             } catch (e: Throwable) {
                 _statusMessage.value = "Add project FAILED: ${e.message}"
