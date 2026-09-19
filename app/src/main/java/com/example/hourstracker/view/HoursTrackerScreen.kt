@@ -67,8 +67,6 @@ fun HoursTrackerScreen(
     var editStartTime by remember { mutableStateOf("08:00") }
     var editEndTime by remember { mutableStateOf("17:00") }
     var editDate by remember { mutableStateOf(java.time.LocalDate.now().toString()) }
-    var pendingStop by remember { mutableStateOf(false) }
-    var stopBreakMinutes by remember { mutableStateOf("0") }
 
     // Project drawer + management state
     var showProjectsDrawer by remember { mutableStateOf(false) }
@@ -167,12 +165,9 @@ fun HoursTrackerScreen(
                                 .size(72.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(Color(0xFFD32F2F))
-                                .clickable {
-                                    stopBreakMinutes = "0"
-                                    pendingStop = true
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
+                                .clickable { viewModel.stopClock(0) },
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
                             Text("■ Stop", fontSize = 15.sp, color = Color.White)
                         }
                     }
@@ -292,35 +287,6 @@ fun HoursTrackerScreen(
                 }
             }
         }
-    }
-
-    // Stop-clock dialog with break minutes
-    if (pendingStop) {
-        AlertDialog(
-            onDismissRequest = { pendingStop = false },
-            confirmButton = {
-                Button(onClick = {
-                    viewModel.stopClock(stopBreakMinutes.toIntOrNull() ?: 0)
-                    pendingStop = false
-                }) { Text("Stop & Save") }
-            },
-            dismissButton = {
-                Button(onClick = { pendingStop = false }) { Text("Continue Working") }
-            },
-            title = { Text("Stop Work Clock") },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    Text("Total elapsed: ${formatElapsedSec(elapsedSec)}")
-                    Text("Project: ${currentProject?.name ?: ""}")
-                    OutlinedTextField(
-                        value = stopBreakMinutes,
-                        onValueChange = { stopBreakMinutes = it },
-                        label = { Text("Break minutes") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        )
     }
 
     // Add-project dialog
