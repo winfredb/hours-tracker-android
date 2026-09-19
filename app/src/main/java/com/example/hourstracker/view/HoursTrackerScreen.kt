@@ -67,6 +67,7 @@ fun HoursTrackerScreen(
     var editStartTime by remember { mutableStateOf("08:00") }
     var editEndTime by remember { mutableStateOf("17:00") }
     var editDate by remember { mutableStateOf(java.time.LocalDate.now().toString()) }
+    var sessionsExpanded by remember { mutableStateOf(false) }
 
     // Project drawer + management state
     var showProjectsDrawer by remember { mutableStateOf(false) }
@@ -182,19 +183,39 @@ fun HoursTrackerScreen(
                 if (sessions.isEmpty()) {
                     Text("No sessions recorded yet")
                 } else {
-                    SessionsList(
-                        sessions = sessions,
-                        jobSites = jobSites,
-                        onEdit = { session ->
-                            editSessionId = session.id
-                            editDate = session.date
-                            editStartTime = session.startTime
-                            editEndTime = session.endTime
-                            editBreakMinutes = session.breakMinutes.toString()
-                            selectedJobSiteId = session.jobSiteId
-                        },
-                        onDelete = { session -> viewModel.deleteSession(session) }
-                    )
+                    // Collapsible summary: shows total hours, expands to the full list.
+                    val totalMinutes = sessions.sumOf { workedMinutes(it) }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.secondaryContainer)
+                            .clickable { sessionsExpanded = !sessionsExpanded }
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Sessions · Total ${formatMinutesShort(totalMinutes)}",
+                            modifier = Modifier.weight(1f),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(if (sessionsExpanded) "▾ Hide" else "▸ Show")
+                    }
+                    if (sessionsExpanded) {
+                        SessionsList(
+                            sessions = sessions,
+                            jobSites = jobSites,
+                            onEdit = { session ->
+                                editSessionId = session.id
+                                editDate = session.date
+                                editStartTime = session.startTime
+                                editEndTime = session.endTime
+                                editBreakMinutes = session.breakMinutes.toString()
+                                selectedJobSiteId = session.jobSiteId
+                            },
+                            onDelete = { session -> viewModel.deleteSession(session) }
+                        )
+                    }
                 }
             }
         }
@@ -472,6 +493,20 @@ fun SessionsList(
             }
         }
     }
+}
+
+private fun workedMinutes(session: WorkSession): Int {
+    val s = java.time.LocalTime.parse(session.startTime)
+    val e = java.time.LocalTime.parse(session.endTime)
+    var diff = e.toSecondOfDay() - s.toSecondOfDay()
+    if (diff < 0) diff += 24 * 3600
+    return diff / 60 - session.breakMinutes
+}
+
+private fun formatMinutesShort(totalMinutes: Int): String {
+    val h = totalMinutes / 60
+    val m = totalMinutes % 60
+    return if (h > 0) "${h}h ${m}m" else "${m}m"
 }
 
 private fun formatElapsedSec(totalSeconds: Long): String {
