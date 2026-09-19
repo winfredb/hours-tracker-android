@@ -47,7 +47,7 @@ jobs:
           fi
           echo "Expected: $SDK_ROOT  sdkmanager: $SDKMGR"
           if [ -n "$SDKMGR" ]; then
-            yes | "$SDKMGR" --sdk_root="$SDK_ROOT" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+            yes | "$SDKMGR" --sdk_root="$SDK_ROOT" "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 || true
             yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
           fi
 
