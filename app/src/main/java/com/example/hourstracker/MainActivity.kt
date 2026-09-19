@@ -69,6 +69,7 @@ class MainActivity : Activity() {
     private var projectsExpanded = false
     private var filteredSiteId: Int? = null // when set, Tasks tab shows only this project's tasks
     private var expandedProjectId: Int? = null // when set, its tasks show inline under the project row
+    private var expandedTaskId: Int? = null // when set, the task card reveals its start/stop times
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var tickerRunning = false
@@ -180,10 +181,13 @@ class MainActivity : Activity() {
         db.readableDatabase.rawQuery("SELECT * FROM job_sites ORDER BY name", null).use { c ->
             while (c.moveToNext()) {
                 val loc = c.getString(c.getColumnIndexOrThrow("location"))
+                val wageIdx = c.getColumnIndex("hourly_wage")
+                val wage = if (wageIdx >= 0 && !c.isNull(wageIdx)) formatWage(c.getDouble(wageIdx)) else null
                 out.add(JobSite(
                     id = c.getInt(c.getColumnIndexOrThrow("id")),
                     name = c.getString(c.getColumnIndexOrThrow("name")),
                     location = loc,
+                    hourlyWage = wage,
                     color = c.getString(c.getColumnIndexOrThrow("color"))
                 ))
             }
@@ -209,22 +213,38 @@ class MainActivity : Activity() {
         return out
     }
 
-    private fun addSite(name: String, location: String = "") {
+    private fun addSite(name: String, location: String = "", wage: String? = null) {
         val cv = android.content.ContentValues()
         cv.put("name", name)
         cv.put("location", if (location.isBlank()) null else location)
+        cv.put("hourly_wage", parseWage(wage))
         cv.put("color", "#6750A4")
         db.writableDatabase.insert("job_sites", null, cv)
         refreshData(); renderAll()
     }
 
-    private fun renameSite(id: Int, name: String, location: String) {
+    private fun renameSite(id: Int, name: String, location: String, wage: String? = null) {
         android.content.ContentValues().apply {
             put("name", name)
             put("location", if (location.isBlank()) null else location)
+            put("hourly_wage", parseWage(wage))
             db.writableDatabase.update("job_sites", this, "id=?", arrayOf(id.toString()))
         }
         refreshData(); renderAll()
+    }
+
+    // Parse a wage string to a Double for the DB; null if blank/invalid.
+    private fun parseWage(wage: String?): Double? {
+        val w = wage?.trim() ?: return null
+        if (w.isEmpty()) return null
+        return w.toDoubleOrNull()
+    }
+
+    // Format a stored wage back to a display string, trimming trailing .0.
+    private fun formatWage(value: Double): String {
+        if (value == value.toLong().toDouble() && Math.abs(value) < 1e12) return value.toLong().toString()
+        val s = String.format(Locale.US, "%.2f", value)
+        return s.trimEnd('0').trimEnd('.')
     }
 
     private fun deleteSite(id: Int) {
@@ -509,46 +529,72 @@ private fun stopClock(jobSiteId: Int) {
     private fun sessionCard(session: WorkSession): View {
         val site = jobSites.find { it.id == session.jobSiteId }
         val projectColor = parseHex(site?.color ?: "#6750A4")
+        val expanded = expandedTaskId == session.id
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(6))
+            setPadding(dp(16), dp(14), dp(16), if (expanded) dp(10) else dp(6))
             background = rounded(if (isDark) 0xFF1B1F26.toInt() else 0xFFFFFFFF.toInt(), 20)
             setMargins(0, dp(8), 0, 0)
+            // Tap: expand/collapse start/stop times.
+            setOnClickListener {
+                expandedTaskId = if (expandedTaskId == session.id) null else session.id
+                renderAll()
+            }
+            // Long-press: edit or delete.
+            setOnLongClickListener {
+                val actions = arrayOf("Edit", "Delete", "Cancel")
+                AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+                    .setTitle("${isoDateDisplay(session.date)}")
+                    .setItems(actions) { _, w ->
+                        when (actions[w]) {
+                            "Edit" -> showEditSession(session)
+                            "Delete" -> AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+                                .setTitle("Delete task?")
+                                .setMessage("${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}")
+                                .setPositiveButton("Delete") { _, _ -> deleteSession(session) }
+                                .setNegativeButton("Cancel", null)
+                                .show()
+                            else -> {}
+                        }
+                    }
+                    .show()
+                true
+            }
         }
 
-        // row 1: dot + date/project + badge
+        // row 1: date/project + total time + earnings
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        row1.addView(dotView(projectColor, 12))
-        val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
+        val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         info.addView(TextView(this).apply { text = isoDateDisplay(session.date); textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
         info.addView(TextView(this).apply { text = site?.name ?: "Unknown project"; textSize = 12f; setTextColor(onSurfaceVariantColor) })
         row1.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row1.addView(pill(formatMinutesShort(workedMinutes(session)), tint(projectColor), onSurfaceColor))
-        card.addView(row1)
-
-        // row 2: time range + break + edit/delete
-        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(10), 0, dp(4)) }
-        row2.addView(TextView(this).apply {
-            text = "${time12(session.startTime)} → ${time12(session.endTime)}"; textSize = 14f; setTextColor(onSurfaceColor)
-        })
-        if (session.breakMinutes > 0) {
-            val onSec = if (isDark) 0xFFD7E1EE.toInt() else 0xFF1F3045.toInt()
-            val secContainer = if (isDark) 0xFF3A4A61.toInt() else 0xFFD7E1EE.toInt()
-            row2.addView(pill("${session.breakMinutes}m break", secContainer, onSec).also {
-                (it.layoutParams as? LinearLayout.LayoutParams)?.setMargins(dp(8), 0, 0, 0)
+        // earnings for this task = wage * worked hours (if the project has a wage)
+        val wageVal = site?.hourlyWage?.trim()?.toDoubleOrNull()
+        if (wageVal != null) {
+            val earned = wageVal * workedMinutes(session) / 60.0
+            row1.addView(pill("\$${String.format(Locale.US, "%.2f", earned)}", primaryContainerColor, onPrimaryContainerColor).also {
+                (it.layoutParams as? LinearLayout.LayoutParams)?.setMargins(dp(6), 0, 0, 0)
             })
         }
-        row2.addView(View(this).apply {}, LinearLayout.LayoutParams(0, 1, 1f))
-        row2.addView(textAction("Edit") { showEditSession(session) })
-        row2.addView(textAction("Delete") {
-            AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
-                .setTitle("Delete task?")
-                .setMessage("${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}")
-                .setPositiveButton("Delete") { _, _ -> deleteSession(session) }
-                .setNegativeButton("Cancel", null)
-                .show()
-        })
-        card.addView(row2)
+        card.addView(row1)
+
+        // When expanded: show the start/stop times (and break) on separate lines.
+        if (expanded) {
+            fun detailRow(label: String, value: String): View {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(6), 0, 0)
+                }
+                row.addView(TextView(this).apply { text = label; textSize = 12f; setTextColor(onSurfaceVariantColor) },
+                    LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT))
+                row.addView(TextView(this).apply { text = value; textSize = 14f; setTextColor(onSurfaceColor) })
+                return row
+            }
+            card.addView(detailRow("Start", time12(session.startTime)))
+            card.addView(detailRow("Stop", time12(session.endTime)))
+            if (session.breakMinutes > 0) card.addView(detailRow("Break", "${session.breakMinutes} min"))
+        }
         return card
     }
 
@@ -563,12 +609,6 @@ private fun stopClock(jobSiteId: Int) {
 
     private fun Int.orColor(fallback: Int): Int {
         return fallback
-    }
-
-    private fun textAction(textVal: String, onClick: () -> Unit): TextView = TextView(this).apply {
-        text = textVal; textSize = 13f; setTypeface(null, Typeface.BOLD)
-        setTextColor(primaryColor); setPadding(dp(8), dp(4), dp(8), dp(4))
-        setOnClickListener { onClick() }
     }
 
     private fun View.setMargins(l: Int, t: Int, r: Int, b: Int) {
@@ -592,7 +632,8 @@ private fun stopClock(jobSiteId: Int) {
         }
         val totalMinutes = siteSessions.sumOf { workedMinutes(it) }
         val hi = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        hi.addView(TextView(this).apply { text = "${site?.name ?: "Project"} — ${siteSessions.size} tasks"; textSize = 13f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+        hi.addView(TextView(this).apply { text = site?.name ?: "Project"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+        hi.addView(TextView(this).apply { text = "${siteSessions.size} tasks"; textSize = 12f; setTextColor(onSurfaceVariantColor) })
         header.addView(hi, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         header.addView(pill("${formatMinutesShort(totalMinutes)}", primaryContainerColor, onPrimaryContainerColor))
         col.addView(header)
@@ -646,11 +687,10 @@ private fun stopClock(jobSiteId: Int) {
                 setPadding(dp(14), dp(12), dp(14), dp(12))
                 background = rounded(surfaceVariantColor, 14)
             }
-            header.addView(dotView(primaryColor, 10))
-            val hi = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
-            hi.addView(TextView(this).apply { text = "${filteredSessions.size} tasks"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
-            header.addView(hi, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            header.addView(pill("Total ${formatMinutesShort(totalMinutes)}", primaryContainerColor, onPrimaryContainerColor))
+            header.addView(TextView(this).apply {
+                text = "Total time"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            header.addView(pill(formatMinutesShort(totalMinutes), primaryContainerColor, onPrimaryContainerColor))
             col.addView(header)
 
             filteredSessions.forEach { s -> col.addView(sessionCard(s)) }
@@ -709,12 +749,12 @@ private fun stopClock(jobSiteId: Int) {
                         renderAll(); if (drawerOpen) openDrawer()
                     }
                     setOnLongClickListener {
-                        val actions = arrayOf("Rename", "Delete", "Cancel")
+                        val actions = arrayOf("Edit", "Delete", "Cancel")
                         AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                             .setTitle(site.name)
                             .setItems(actions) { _, w ->
                                 when (actions[w]) {
-                                    "Rename" -> showRename(site)
+                                    "Edit" -> showEditProject(site)
                                     "Delete" -> AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                                         .setTitle("Delete ${site.name}?")
                                         .setMessage("Tasks will stay; the project is removed.")
@@ -728,9 +768,20 @@ private fun stopClock(jobSiteId: Int) {
                         true
                     }
                 }.also { row ->
+                    val siteSessions = sessions.filter { it.jobSiteId == site.id }
+                    val totalMin = siteSessions.sumOf { workedMinutes(it) }
+                    val wageVal = site.hourlyWage?.trim()?.toDoubleOrNull()
+                    val earnings = if (wageVal != null) wageVal * totalMin / 60.0 else null
                     val ci = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                     ci.addView(TextView(this).apply { text = site.name; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
-                    if (!site.location.isNullOrBlank()) ci.addView(TextView(this).apply { text = site.location; textSize = 12f; setTextColor(onSurfaceVariantColor) })
+                    val subParts = mutableListOf<String>()
+                    if (!site.location.isNullOrBlank()) subParts.add(site.location)
+                    if (!site.hourlyWage.isNullOrBlank()) subParts.add("\$${site.hourlyWage}/hr")
+                    if (subParts.isNotEmpty()) ci.addView(TextView(this).apply { text = subParts.joinToString(" · "); textSize = 12f; setTextColor(onSurfaceVariantColor) })
+                    val statParts = mutableListOf<String>()
+                    statParts.add("${formatMinutesShort(totalMin)}")
+                    if (earnings != null) statParts.add("\$${String.format(Locale.US, "%.2f", earnings)} earned")
+                    ci.addView(TextView(this).apply { text = statParts.joinToString(" · "); textSize = 12f; setTypeface(null, Typeface.BOLD); setTextColor(primaryColor) })
                     row.addView(ci, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 })
                 if (expandedProjectId == site.id) {
@@ -803,17 +854,26 @@ private fun stopClock(jobSiteId: Int) {
         val name = EditText(this).apply {
             hint = "Project name"; textSize = 18f
             setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        val wage = EditText(this).apply {
+            hint = "Hourly wage ($)"; textSize = 18f
+            setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         }
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(28), dp(16), dp(28), dp(8))
         }
         name.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        wage.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        wage.setMargins(0, dp(10), 0, 0)
         wrap.addView(name)
+        wrap.addView(wage)
         AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Add Project")
             .setView(wrap)
             .setPositiveButton("Add") { _, _ ->
-                if (name.text.toString().isNotBlank()) { addSite(name.text.toString().trim()) }
+                if (name.text.toString().isNotBlank()) addSite(name.text.toString().trim(), "", wage.text.toString().trim())
                 else statusMessage = "Project name can't be empty"
             }
             .setNegativeButton("Cancel", null)
@@ -821,14 +881,19 @@ private fun stopClock(jobSiteId: Int) {
         name.requestFocus()
     }
 
-    private fun showRename(site: JobSite) {
-        val name = EditText(this).apply { setText(site.name); setTextColor(onSurfaceColor) }
-        val loc = EditText(this).apply { setText(site.location ?: ""); setTextColor(onSurfaceColor) }
+    // Edit an existing project: name, location, and hourly wage.
+    private fun showEditProject(site: JobSite) {
+        val name = EditText(this).apply { setText(site.name); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_TEXT }
+        val loc = EditText(this).apply { setText(site.location ?: ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_TEXT }
+        val wage = EditText(this).apply { setText(site.hourlyWage ?: ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL }
+        val nameLbl = TextView(this).apply { text = "Name"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
+        val locLbl = TextView(this).apply { text = "Location"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
+        val wageLbl = TextView(this).apply { text = "Hourly wage ($)"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
         AlertDialog.Builder(this, pickerDialogThemeId())
-            .setTitle("Rename Project")
-            .setView(fieldColumn(name, loc))
+            .setTitle("Edit Project")
+            .setView(fieldColumn(nameLbl, name, locLbl, loc, wageLbl, wage))
             .setPositiveButton("Save") { _, _ ->
-                if (name.text.toString().isNotBlank()) renameSite(site.id, name.text.toString().trim(), loc.text.toString())
+                if (name.text.toString().isNotBlank()) renameSite(site.id, name.text.toString().trim(), loc.text.toString(), wage.text.toString().trim())
                 else statusMessage = "Project name can't be empty"
             }
             .setNegativeButton("Cancel", null)
