@@ -11,13 +11,23 @@ android {
         applicationId = "com.example.hourstracker"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            // minSdk 26 skips v1 by default; force all schemes so the APK
+            // installs reliably across runtimes.
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
     }
 
     kotlinOptions { jvmTarget = "17" }

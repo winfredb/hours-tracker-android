@@ -276,7 +276,18 @@ class MainActivity : Activity() {
     private fun renderAll() { buildLayout() }
 
     private fun buildLayout() {
-        val root = FrameLayout(this).apply { setBackgroundColor(bgColor); setPadding(0, statusBarTop + dp(18), 0, 0) }
+        val topPad = statusBarTop + dp(18)
+        val root = FrameLayout(this).apply { setBackgroundColor(bgColor); setPadding(0, topPad, 0, 0) }
+
+        // Edge-to-edge: the status bar is transparent and shows our background,
+        // so the host's white icons (battery/wifi/cellular) vanish on the light
+        // background. Paint a dark band across the very top strip so they always
+        // contrast. Dark mode already uses a dark background, so the band blends
+        // in seamlessly there too. (No platform status-bar API needed.)
+        val topBand = View(this).apply { setBackgroundColor(0xFF101318.toInt()) }
+        val bandLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, topPad, Gravity.TOP)
+        bandLp.topMargin = -topPad // pull up to the very top, behind the content
+        root.addView(topBand, bandLp)
 
         val scroll = ScrollView(this)
         val column = LinearLayout(this).apply {
@@ -388,8 +399,11 @@ class MainActivity : Activity() {
 
         // ---- floating ☰ (top-right) ----
         val menuBtn = TextView(this).apply {
-            text = "☰"; textSize = 30f; setTextColor(onSurfaceColor); gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 0)
+            id = 3
+            text = "☰"; textSize = 30f; setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor); gravity = Gravity.CENTER
+            background = rounded(surfaceVariantColor, 28)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             setOnClickListener { openDrawer() }
         }
         root.addView(menuBtn, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.END))
