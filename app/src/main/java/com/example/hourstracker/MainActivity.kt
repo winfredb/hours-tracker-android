@@ -3,6 +3,7 @@ package com.example.hourstracker
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.content.ContentValues
 import android.content.Context
 import android.content.SharedPreferences
@@ -35,6 +36,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.WeekFields
@@ -416,7 +418,7 @@ private fun stopClock(jobSiteId: Int) {
         val sessionsCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         if (sessions.isEmpty()) {
             sessionsCol.addView(TextView(this).apply {
-                text = "No sessions recorded yet"; textSize = 14f; setTextColor(onSurfaceVariantColor)
+                text = "No tasks recorded yet"; textSize = 14f; setTextColor(onSurfaceVariantColor)
                 gravity = Gravity.CENTER
             })
         } else {
@@ -431,8 +433,8 @@ private fun stopClock(jobSiteId: Int) {
             }
             header.addView(dotView(primaryColor, 10))
             val hi = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
-            hi.addView(TextView(this).apply { text = "Sessions"; textSize = 16f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
-            hi.addView(TextView(this).apply { text = "${sessions.size} sessions recorded"; textSize = 12f; setTextColor(onSurfaceVariantColor) })
+            hi.addView(TextView(this).apply { text = "Tasks"; textSize = 16f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+            hi.addView(TextView(this).apply { text = "${sessions.size} tasks recorded"; textSize = 12f; setTextColor(onSurfaceVariantColor) })
             header.addView(hi, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             header.addView(pill("Total ${formatMinutesShort(totalMinutes)}", primaryContainerColor, onPrimaryContainerColor))
             header.addView(TextView(this).apply {
@@ -446,6 +448,7 @@ private fun stopClock(jobSiteId: Int) {
             }
         }
         column.addView(sessionsCol)
+        column.addView(drawerButton("＋ Add Task") { showAddSession() })
 
         // ---- floating ☰ (top-right) ----
         val menuBtn = TextView(this).apply {
@@ -537,7 +540,7 @@ private fun stopClock(jobSiteId: Int) {
         row2.addView(textAction("Edit") { showEditSession(session) })
         row2.addView(textAction("Delete") {
             AlertDialog.Builder(this@MainActivity)
-                .setTitle("Delete session?")
+                .setTitle("Delete task?")
                 .setMessage("${isoDateDisplay(session.date)} ${session.startTime}-${session.endTime}")
                 .setPositiveButton("Delete") { _, _ -> deleteSession(session) }
                 .setNegativeButton("Cancel", null)
@@ -576,9 +579,11 @@ private fun stopClock(jobSiteId: Int) {
     private fun closeDrawer() { drawerScrim?.visibility = View.GONE; drawerPanel?.visibility = View.GONE; drawerOpen = false }
 
     private fun buildDrawer(): View {
-        val panel = android.widget.ScrollView(this).apply { setBackgroundColor(if (isDark) 0xFF14181D.toInt() else 0xFFFFFFFF.toInt()) }
+        val frame = FrameLayout(this).apply { setBackgroundColor(if (isDark) 0xFF14181D.toInt() else 0xFFFFFFFF.toInt()) }
+        val panel = android.widget.ScrollView(this)
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(24), dp(20), dp(24)) }
         panel.addView(col)
+        frame.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         col.addView(TextView(this).apply { text = "Projects"; textSize = 22f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
         col.addView(TextView(this).apply { text = "Your job sites"; textSize = 13f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(2), 0, dp(12)) })
@@ -604,7 +609,14 @@ private fun stopClock(jobSiteId: Int) {
         if (jobSites.isNotEmpty()) col.addView(drawerButton("Manage Projects") { closeDrawer(); showManageProjects() })
         col.addView(drawerButton("⤓ Export Date Range") { closeDrawer(); showExportRange() })
         col.addView(drawerButton(if (isDark) "☀ Light mode" else "🌙 Dark mode") { toggleDark() })
-        return panel
+
+        // footer, pinned to the bottom of the drawer
+        val footer = TextView(this).apply {
+            text = "vibe coded by pooh"; textSize = 11f; setTextColor(onSurfaceVariantColor)
+            gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(34))
+        }
+        frame.addView(footer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        return frame
     }
 
     private fun drawerButton(textVal: String, onClick: () -> Unit): TextView = TextView(this).apply {
@@ -656,7 +668,7 @@ private fun stopClock(jobSiteId: Int) {
                     setOnClickListener {
                         AlertDialog.Builder(this@MainActivity)
                             .setTitle("Delete ${site.name}?")
-                            .setMessage("Sessions will stay; the project is removed.")
+                            .setMessage("Tasks will stay; the project is removed.")
                             .setPositiveButton("Delete") { _, _ -> deleteSite(site.id) }
                             .setNegativeButton("Cancel", null)
                             .show()
@@ -696,16 +708,90 @@ private fun stopClock(jobSiteId: Int) {
             .show()
     }
 
+    private fun showAddSession() {
+        val now = LocalDateTime.now()
+        val today = now.toLocalDate().toString()
+        showSessionDialog(
+            title = "Add Task",
+            initialDate = isoDateDisplay(today),
+            initialStart = "",
+            initialEnd = "",
+            initialBreak = "0",
+            initialSiteId = jobSites.firstOrNull()?.id ?: 1,
+            confirmLabel = "Add"
+        ) { d, s, e, b, siteId ->
+            insertSession(WorkSession(id = 0, jobSiteId = siteId, date = parseDateToIso(d),
+                startTime = s, endTime = e, breakMinutes = b, notes = null))
+        }
+    }
+
     private fun showEditSession(session: WorkSession) {
-        val date = EditText(this).apply { setText(isoDateDisplay(session.date)); setTextColor(onSurfaceColor) }
-        val start = EditText(this).apply { setText(session.startTime); setTextColor(onSurfaceColor) }
-        val end = EditText(this).apply { setText(session.endTime); setTextColor(onSurfaceColor) }
-        val brk = EditText(this).apply { setText(session.breakMinutes.toString()); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER }
+        showSessionDialog(
+            title = "Edit Task",
+            initialDate = isoDateDisplay(session.date),
+            initialStart = session.startTime,
+            initialEnd = session.endTime,
+            initialBreak = session.breakMinutes.toString(),
+            initialSiteId = session.jobSiteId,
+            confirmLabel = "Save"
+        ) { d, s, e, b, siteId ->
+            updateSession(WorkSession(id = session.id, jobSiteId = siteId, date = parseDateToIso(d),
+                startTime = s, endTime = e, breakMinutes = b, notes = session.notes))
+        }
+    }
+
+    /** Shared session add/edit form: date (calendar picker), start, end, break, project picker. */
+    private fun showSessionDialog(title: String, initialDate: String, initialStart: String,
+                                  initialEnd: String, initialBreak: String, initialSiteId: Int,
+                                  confirmLabel: String, onSave: (String, String, String, Int, Int) -> Unit) {
+        // initial date parts (MM/dd/yyyy display) for the calendar picker
+        val initP = Regex("""(\d{1,2})/(\d{1,2})/(\d{4})""").matchEntire(initialDate.trim())
+        var dateYear = initP?.groupValues?.get(3)?.toIntOrNull() ?: LocalDate.now().year
+        var dateMonth = (initP?.groupValues?.get(1)?.toIntOrNull() ?: 1) - 1 // 0-based
+        var dateDay = initP?.groupValues?.get(2)?.toIntOrNull() ?: 1
+
+        val date = EditText(this).apply {
+            setText(initialDate); setTextColor(onSurfaceColor)
+            isFocusable = false; isClickable = true
+            setOnClickListener {
+                DatePickerDialog(this@MainActivity, { _, y, m, d ->
+                    dateYear = y; dateMonth = m; dateDay = d
+                    setText("${String.format(Locale.US, "%02d", m + 1)}/${String.format(Locale.US, "%02d", d)}/$y")
+                }, dateYear, dateMonth, dateDay).show()
+            }
+        }
+        // initial time parts (HH:MM) for the clock pickers
+        fun parseHh(mm: String): Int = mm.trim().split(":").getOrNull(0)?.toIntOrNull() ?: 9
+        fun parseMin(mm: String): Int = mm.trim().split(":").getOrNull(1)?.toIntOrNull() ?: 0
+        var startH = parseHh(initialStart); var startM = parseMin(initialStart)
+        var endH = parseHh(initialEnd); var endM = parseMin(initialEnd)
+
+        val start = EditText(this).apply {
+            setText(initialStart); setTextColor(onSurfaceColor)
+            isFocusable = false; isClickable = true
+            setOnClickListener {
+                TimePickerDialog(this@MainActivity, { _, h, m ->
+                    startH = h; startM = m
+                    setText(String.format(Locale.US, "%02d:%02d", h, m))
+                }, startH, startM, true).show()
+            }
+        }
+        val end = EditText(this).apply {
+            setText(initialEnd); setTextColor(onSurfaceColor)
+            isFocusable = false; isClickable = true
+            setOnClickListener {
+                TimePickerDialog(this@MainActivity, { _, h, m ->
+                    endH = h; endM = m
+                    setText(String.format(Locale.US, "%02d:%02d", h, m))
+                }, endH, endM, true).show()
+            }
+        }
+        val brk = EditText(this).apply { setText(initialBreak); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER }
 
         // project picker row
         val projNames = jobSites.map { it.name }.toTypedArray()
-        val projIdx = jobSites.indexOfFirst { it.id == session.jobSiteId }
-        var selectedIdx = if (projIdx >= 0) projIdx else 0
+        var selectedIdx = if (initialSiteId > 0) jobSites.indexOfFirst { it.id == initialSiteId } else 0
+        if (selectedIdx < 0) selectedIdx = 0
         val projLbl = TextView(this).apply { text = "Project: ${jobSites.getOrNull(selectedIdx)?.name ?: "?"}"; textSize = 14f; setTextColor(primaryColor); setPadding(0, dp(6), 0, 0) }
         projLbl.setOnClickListener {
             AlertDialog.Builder(this@MainActivity)
@@ -716,22 +802,19 @@ private fun stopClock(jobSiteId: Int) {
         }
 
         val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(4)) }
-        listOf(date to "Date", start to "Start time", end to "End time", brk to "Break (min)").forEach { (f, labelTxt) ->
+        listOf(date to "Tap to pick date (calendar)", start to "Tap to pick start (clock)", end to "Tap to pick end (clock)", brk to "Break (min)").forEach { (f, labelTxt) ->
             f.hint = labelTxt; f.setHintTextColor(onSurfaceVariantColor); form.addView(f)
             form.addView(View(this).apply {}, LinearLayout.LayoutParams(1, dp(6)))
         }
         form.addView(projLbl)
 
         AlertDialog.Builder(this)
-            .setTitle("Edit Session")
+            .setTitle(title)
             .setView(form)
-            .setPositiveButton("Save") { _, _ ->
+            .setPositiveButton(confirmLabel) { _, _ ->
                 val rid = jobSites.getOrNull(selectedIdx)?.id ?: 1
-                updateSession(WorkSession(
-                    id = session.id, jobSiteId = rid, date = parseDateToIso(date.text.toString()),
-                    startTime = start.text.toString(), endTime = end.text.toString(),
-                    breakMinutes = brk.text.toString().toIntOrNull() ?: 0, notes = null
-                ))
+                onSave(date.text.toString(), start.text.toString(), end.text.toString(),
+                    brk.text.toString().toIntOrNull() ?: 0, rid)
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -831,7 +914,7 @@ private fun stopClock(jobSiteId: Int) {
             jobSites.forEach { site ->
                 val siteSessions = sessions.filter { it.jobSiteId == site.id }.sortedWith(compareBy({ it.date }, { it.startTime }))
                 val safeName = site.name.replace("/", "-").replace("\\\\", "-").trim() + ".xlsx"
-                writeDownload("Tasks", safeName, buildXlsxSheets(listOf("Session" to buildRows(siteSessions))))
+                writeDownload("Tasks", safeName, buildXlsxSheets(listOf("Task" to buildRows(siteSessions))))
             }
             statusMessage = "Files written to Downloads/HoursTracker/Tasks ✓"
         } catch (e: Exception) {
@@ -940,7 +1023,7 @@ private fun stopClock(jobSiteId: Int) {
         private fun exportRange(from: String, to: String) {
             try {
                 val inRange = sessions.filter { it.date >= from && it.date <= to }
-                if (inRange.isEmpty()) { statusMessage = "No sessions in range"; renderAll(); return }
+                if (inRange.isEmpty()) { statusMessage = "No tasks in range"; renderAll(); return }
                 val siteName = { id: Int -> jobSites.find { it.id == id }?.name ?: "Unknown" }
 
                 // Summary rows: one per project + grand total.
