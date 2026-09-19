@@ -933,8 +933,18 @@ private fun stopClock(jobSiteId: Int) {
                 val pdfFile = File(dir, "Summary_$label.pdf")
                 FileOutputStream(pdfFile).use { it.write(buildPdf(from, to, summaryRows, weekRows)) }
                 statusMessage = "Exported $from → $to (xlsx + pdf) ✓"
+                AlertDialog.Builder(this)
+                    .setTitle("Export complete ✓")
+                    .setMessage("Saved to Downloads/HoursTracker/\n\n• ${xlsFile.name}\n• ${pdfFile.name}")
+                    .setPositiveButton("OK", null)
+                    .show()
             } catch (e: Exception) {
                 statusMessage = "Export FAILED: ${e.message}"
+                AlertDialog.Builder(this)
+                    .setTitle("Export failed")
+                    .setMessage(e.message ?: "Unknown error")
+                    .setPositiveButton("OK", null)
+                    .show()
             }
             renderAll()
         }
