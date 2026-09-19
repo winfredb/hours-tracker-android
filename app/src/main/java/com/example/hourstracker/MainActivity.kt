@@ -14,6 +14,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.pdf.PdfDocument
 import android.os.Bundle
+import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -27,11 +28,11 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.provider.MediaStore
 import com.example.hourstracker.model.JobSite
 import com.example.hourstracker.model.WorkSession
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileOutputStream
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
@@ -785,18 +786,53 @@ private fun stopClock(jobSiteId: Int) {
 
     // ==================== XLSX EXPORT ====================
 
+    /**
+     * Writes bytes into Downloads/HoursTracker/<subdir>/<filename>. Uses the
+     * MediaStore (Android 10+) so the OS creates and indexes the nested folder
+     * under Downloads reliably under scoped storage; falls back to plain File
+     * IO on older versions. Returns a human-friendly display path.
+     */
+    private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): String {
+        val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}".trimEnd('/') + "/"
+        val dirName = if (subdir.isBlank()) "HoursTracker" else "$subdir"
+        if (Build.VERSION.SDK_INT >= 29) {
+            val cv = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                put(MediaStore.Downloads.RELATIVE_PATH, relFolder)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
+                ?: error("Could not create file entry")
+            try {
+                contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                    ?: error("Could not open output stream")
+                cv.clear()
+                cv.put(MediaStore.Downloads.IS_PENDING, 0)
+                contentResolver.update(uri, cv, null, null)
+            } catch (e: Exception) {
+                contentResolver.delete(uri, null, null)
+                throw e
+            }
+            val pathPart = (if (dirName.isBlank()) "" else "$dirName/") + filename
+            return "Downloads/$pathPart"
+        } else {
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HoursTracker")
+            val sub = if (subdir.isBlank()) dir else File(dir, subdir)
+            sub.mkdirs()
+            File(sub, filename).writeBytes(bytes)
+            return "Downloads/${if (dirName.isBlank()) "" else "$dirName/"}${filename}"
+        }
+    }
+
     /** Writes one workbook per project into Downloads/HoursTracker/<Name>.xlsx after any session change. */
     private fun exportAll() {
         try {
-            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HoursTracker")
-            dir.mkdirs()
             jobSites.forEach { site ->
                 val siteSessions = sessions.filter { it.jobSiteId == site.id }.sortedWith(compareBy({ it.date }, { it.startTime }))
-                val safeName = site.name.replace("/", "-").replace("\\", "-").trim() + ".xlsx"
-                val file = File(dir, safeName)
-                FileOutputStream(file).use { it.write(buildXlsxSheets(listOf("Session" to buildRows(siteSessions)))) }
+                val safeName = site.name.replace("/", "-").replace("\\\\", "-").trim() + ".xlsx"
+                writeDownload("Tasks", safeName, buildXlsxSheets(listOf("Session" to buildRows(siteSessions))))
             }
-            statusMessage = "Files written to Downloads/HoursTracker ✓"
+            statusMessage = "Files written to Downloads/HoursTracker/Tasks ✓"
         } catch (e: Exception) {
             statusMessage = "Export FAILED: ${e.message}"
         }
@@ -940,20 +976,16 @@ private fun stopClock(jobSiteId: Int) {
                 val sessionRows = buildRows(inRange.sortedWith(compareBy({ it.date }, { it.startTime })))
 
                 val label = "${from}_to_${to}"
-                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HoursTracker")
-                dir.mkdirs()
-                val xlsFile = File(dir, "Summary_$label.xlsx")
-                FileOutputStream(xlsFile).use { it.write(buildXlsxSheets(listOf(
+                val xlsPath = writeDownload("Tasks", "Summary_$label.xlsx", buildXlsxSheets(listOf(
                     "Summary" to summaryRows,
                     "By Week" to weekRows,
                     "Sessions" to sessionRows
-                ))) }
-                val pdfFile = File(dir, "Summary_$label.pdf")
-                FileOutputStream(pdfFile).use { it.write(buildPdf(from, to, summaryRows, weekRows)) }
+                )))
+                val pdfPath = writeDownload("Export", "Summary_$label.pdf", buildPdf(from, to, summaryRows, weekRows))
                 statusMessage = "Exported $from → $to (xlsx + pdf) ✓"
                 AlertDialog.Builder(this)
                     .setTitle("Export complete ✓")
-                    .setMessage("Saved to Downloads/HoursTracker/\n\n• ${xlsFile.name}\n• ${pdfFile.name}")
+                    .setMessage("Saved:\n• $xlsPath\n• $pdfPath")
                     .setPositiveButton("OK", null)
                     .show()
             } catch (e: Exception) {
