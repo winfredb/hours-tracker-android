@@ -217,7 +217,7 @@ class MainActivity : Activity() {
         cv.put("notes", session.notes)
         db.writableDatabase.insert("work_sessions", null, cv)
         refreshData(); renderAll(); exportAll()
-        statusMessage = "Saved ✓ ${session.date} ${session.startTime}-${session.endTime}"
+        statusMessage = "Saved ✓ ${isoDateDisplay(session.date)} ${session.startTime}-${session.endTime}"
     }
 
     private fun updateSession(session: WorkSession) {
@@ -230,7 +230,7 @@ class MainActivity : Activity() {
             db.writableDatabase.update("work_sessions", this, "id=?", arrayOf(session.id.toString()))
         }
         refreshData(); renderAll(); exportAll()
-        statusMessage = "Updated ✓ ${session.date}"
+        statusMessage = "Updated ✓ ${isoDateDisplay(session.date)}"
     }
 
     private fun deleteSession(session: WorkSession) {
@@ -513,7 +513,7 @@ private fun stopClock(jobSiteId: Int) {
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         row1.addView(dotView(projectColor, 12))
         val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
-        info.addView(TextView(this).apply { text = session.date; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+        info.addView(TextView(this).apply { text = isoDateDisplay(session.date); textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
         info.addView(TextView(this).apply { text = site?.name ?: "Unknown project"; textSize = 12f; setTextColor(onSurfaceVariantColor) })
         row1.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row1.addView(pill(formatMinutesShort(workedMinutes(session)), tint(projectColor), onSurfaceColor))
@@ -536,7 +536,7 @@ private fun stopClock(jobSiteId: Int) {
         row2.addView(textAction("Delete") {
             AlertDialog.Builder(this@MainActivity)
                 .setTitle("Delete session?")
-                .setMessage("${session.date} ${session.startTime}-${session.endTime}")
+                .setMessage("${isoDateDisplay(session.date)} ${session.startTime}-${session.endTime}")
                 .setPositiveButton("Delete") { _, _ -> deleteSession(session) }
                 .setNegativeButton("Cancel", null)
                 .show()
@@ -695,7 +695,7 @@ private fun stopClock(jobSiteId: Int) {
     }
 
     private fun showEditSession(session: WorkSession) {
-        val date = EditText(this).apply { setText(session.date); setTextColor(onSurfaceColor) }
+        val date = EditText(this).apply { setText(isoDateDisplay(session.date)); setTextColor(onSurfaceColor) }
         val start = EditText(this).apply { setText(session.startTime); setTextColor(onSurfaceColor) }
         val end = EditText(this).apply { setText(session.endTime); setTextColor(onSurfaceColor) }
         val brk = EditText(this).apply { setText(session.breakMinutes.toString()); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER }
@@ -726,7 +726,7 @@ private fun stopClock(jobSiteId: Int) {
             .setPositiveButton("Save") { _, _ ->
                 val rid = jobSites.getOrNull(selectedIdx)?.id ?: 1
                 updateSession(WorkSession(
-                    id = session.id, jobSiteId = rid, date = date.text.toString(),
+                    id = session.id, jobSiteId = rid, date = parseDateToIso(date.text.toString()),
                     startTime = start.text.toString(), endTime = end.text.toString(),
                     breakMinutes = brk.text.toString().toIntOrNull() ?: 0, notes = null
                 ))
@@ -759,6 +759,24 @@ private fun stopClock(jobSiteId: Int) {
         return if (h > 0) "${h}h ${m}m" else "${m}m"
     }
 
+    // Display an ISO date (yyyy-MM-dd) as MM/dd/yyyy; falls back to the input
+    // if it isn't a parseable ISO date.
+    private fun isoDateDisplay(iso: String): String = try {
+        val d = LocalDate.parse(iso)
+        "${String.format(Locale.US, "%02d", d.monthValue)}/${String.format(Locale.US, "%02d", d.dayOfMonth)}/${d.year}"
+    } catch (e: Exception) { iso }
+
+    // Convert a user-typed date (MM/dd/yyyy or yyyy-MM-dd) back to ISO for storage.
+    private fun parseDateToIso(input: String): String {
+        val m = Regex("""(\d{1,2})/(\d{1,2})/(\d{4})""").matchEntire(input.trim())
+        if (m != null) {
+            return try {
+                LocalDate.of(m.groupValues[3].toInt(), m.groupValues[1].toInt(), m.groupValues[2].toInt()).toString()
+            } catch (e: Exception) { input }
+        }
+        return if (input.trim().matches(Regex("""\d{4}-\d{2}-\d{2}"""))) input.trim() else input
+    }
+
     private fun formatElapsedMs(totalMs: Long): String {
         val s = totalMs / 1000
         val h = s / 3600; val m = (s % 3600) / 60; val ss = s % 60
@@ -789,7 +807,7 @@ private fun stopClock(jobSiteId: Int) {
             val out = mutableListOf(listOf("Date", "Start", "End", "Break (min)", "Worked (min)", "Notes"))
             rows.forEach { s ->
                 val worked = durationMinutes(s.startTime, s.endTime) - s.breakMinutes
-                out.add(listOf(s.date, s.startTime, s.endTime, s.breakMinutes.toString(), worked.toString(), s.notes ?: ""))
+                out.add(listOf(isoDateDisplay(s.date), s.startTime, s.endTime, s.breakMinutes.toString(), worked.toString(), s.notes ?: ""))
             }
             return out
         }
@@ -908,14 +926,14 @@ private fun stopClock(jobSiteId: Int) {
                 }
                 weeksByProject.toList().sortedBy { siteName(it.first) }.forEach { (pid, weeks) ->
                     weeks.toSortedMap().forEach { (w, mins) ->
-                        weekRows.add(listOf(siteName(pid), w, weekNumber(w).toString(), hhMm(mins)))
+                        weekRows.add(listOf(siteName(pid), isoDateDisplay(w), weekNumber(w).toString(), hhMm(mins)))
                     }
                     val total = weeks.values.sum()
                     weekRows.add(listOf(siteName(pid), "— Total —", "", hhMm(total)))
                 }
                 byWeek.forEach { (w, rows) ->
                     val total = rows.sumOf { workedMinutes(it) }
-                    weekRows.add(listOf("★ Week total", w, "", hhMm(total)))
+                    weekRows.add(listOf("★ Week total", isoDateDisplay(w), "", hhMm(total)))
                 }
 
                 // Sessions sheet: raw detail in range.
@@ -1033,7 +1051,7 @@ private fun stopClock(jobSiteId: Int) {
                 // --- Page: Summary ---
                 pw = pw.newPage()
                 pw.heading("Hours Tracker — Summary")
-                pw.subhead("Range: $from  →  $to")
+                pw.subhead("Range: ${isoDateDisplay(from)}  →  ${isoDateDisplay(to)}")
                 pw.space()
                 pw.table(summary, columns = intArrayOf(420, 100))
                 pw.closePage()
@@ -1041,7 +1059,7 @@ private fun stopClock(jobSiteId: Int) {
                 // --- Page: By Week ---
                 pw = pw.newPage()
                 pw.heading("Hours by Week (weeks start Monday)")
-                pw.subhead("Range: $from  →  $to")
+                pw.subhead("Range: ${isoDateDisplay(from)}  →  ${isoDateDisplay(to)}")
                 pw.space()
                 pw.table(byWeek, columns = intArrayOf(200, 220, 90, 90))
                 pw.closePage()
