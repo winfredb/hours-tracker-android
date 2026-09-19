@@ -15,6 +15,9 @@ interface WorkSessionDao {
     @Query("SELECT * FROM work_sessions ORDER BY date DESC")
     fun getAllSessions(): Flow<List<WorkSession>>
 
+    @Query("SELECT * FROM work_sessions WHERE job_site_id = :jobSiteId ORDER BY date, start_time")
+    fun getSessionsForJobSite(jobSiteId: Int): Flow<List<WorkSession>>
+
     @Query("SELECT * FROM work_sessions WHERE date BETWEEN :start AND :end ORDER BY date")
     fun getSessionsInPeriod(start: String, end: String): Flow<List<WorkSession>>
 

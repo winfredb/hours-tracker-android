@@ -146,17 +146,16 @@ class HoursViewModel @Inject constructor(
         }
     }
 
-    /** Insert a session, auto-export its PDF, and report to the UI. */
+    /** Insert a session, write/refresh its project's Excel file, and report to the UI. */
     fun addSession(session: WorkSession) {
         Log.d("HoursTracker", "addSession called: ${session.date} ${session.startTime}-${session.endTime}")
         viewModelScope.launch {
             try {
                 database.workSessionDao().insertSession(session)
                 _sessions.value = database.workSessionDao().getAllSessions().first()
-                // Auto-write this session's PDF into its own folder.
-                val jobSites = database.jobSiteDao().getAllJobSites().first()
-                val files = exportSessionPdfs(listOf(session), jobSites)
-                Log.d("HoursTracker", "Saved OK + exported ${files.size} session file(s)")
+                // Rebuild this session's project workbook so it includes the new row.
+                val files = refreshAllProjectFiles()
+                Log.d("HoursTracker", "Saved OK + refreshed ${files.size} project file(s)")
                 _statusMessage.value = "Saved ✓ ${session.date} ${session.startTime}-${session.endTime}"
             } catch (e: Throwable) {
                 Log.e("HoursTracker", "insertSession FAILED", e)
@@ -170,6 +169,7 @@ class HoursViewModel @Inject constructor(
             try {
                 database.workSessionDao().updateSession(session)
                 _sessions.value = database.workSessionDao().getAllSessions().first()
+                refreshAllProjectFiles()
                 _statusMessage.value = "Updated ✓ ${session.date}"
             } catch (e: Throwable) {
                 _statusMessage.value = "Update FAILED: ${e.message}"
@@ -182,6 +182,7 @@ class HoursViewModel @Inject constructor(
             try {
                 database.workSessionDao().deleteSession(session)
                 _sessions.value = database.workSessionDao().getAllSessions().first()
+                refreshAllProjectFiles()
                 _statusMessage.value = "Deleted ✓"
             } catch (e: Throwable) {
                 _statusMessage.value = "Delete FAILED: ${e.message}"
@@ -246,91 +247,65 @@ class HoursViewModel @Inject constructor(
         return database.workSessionDao().getSessionsInPeriod(start, end)
     }
 
-    fun exportPdf(outputPath: String, startDate: String, endDate: String) {
-        viewModelScope.launch {
-            try {
-                val sessions = database.workSessionDao().getSessionsInPeriod(startDate, endDate).first()
-                val jobSites = database.jobSiteDao().getAllJobSites().first()
-                val written = exportSessionPdfs(sessions, jobSites)
-                _statusMessage.value = "Exported ${written.size} session file(s) ✓"
-            } catch (e: Throwable) {
-                Log.e("HoursTracker", "exportPdf FAILED", e)
-                _statusMessage.value = "Export FAILED: ${e.message}"
-            }
-        }
-    }
-
-    /** Opens the native share sheet for the most recent session in the range. */
-    fun sharePdf(outputPath: String, startDate: String, endDate: String) {
-        viewModelScope.launch {
-            try {
-                val sessions = database.workSessionDao().getSessionsInPeriod(startDate, endDate).first()
-                val jobSites = database.jobSiteDao().getAllJobSites().first()
-                val files = exportSessionPdfs(sessions, jobSites)
-                val file = files.lastOrNull()
-                if (file != null) {
-                    val intent = Intent(Intent.ACTION_SEND)
-                        .setDataAndType(Uri.fromFile(file), "application/pdf")
-                    appContext.startActivity(intent)
-                } else {
-                    _statusMessage.value = "No sessions to share"
-                }
-            } catch (e: Throwable) {
-                Log.e("HoursTracker", "sharePdf FAILED", e)
-                _statusMessage.value = "Share FAILED: ${e.message}"
-            }
-        }
-    }
+    /**
+     * Writes one Excel workbook per project into public Downloads:
+     *   <downloads>/HoursTracker/<ProjectName>.xlsx
+     * Rebuilt in full whenever sessions change, so each file always reflects
+     * every recorded session for that project.
+     */
 
     /**
-     * Writes one Excel file per session, each into its own folder:
-     *   <externalDir>/HoursTracker/<date>/<startTime>-<endTime>/session.xlsx
-     * Returns the list of files written (order preserved).
+     * Rebuild every project's workbook from its sessions.
+     * Returns the list of files written.
      */
-    private fun exportSessionPdfs(
-        sessions: List<WorkSession>,
-        jobSites: List<JobSite>
-    ): List<File> {
-        // Write into the public Downloads folder (visible to a file manager),
-        // in a subfolder so the app's files are easy to find.
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+    private suspend fun refreshAllProjectFiles(): List<File> {
+        val jobSites = database.jobSiteDao().getAllJobSites().first()
         val written = ArrayList<File>()
-        sessions.forEach { s ->
-            val bytes = buildSingleSessionXlsBytes(s, jobSites)
-            // Build a per-session folder; sanitize so it's a valid path.
-            val folderTime = s.startTime.replace(":", "-")
-            val safeName = s.date + "_" + folderTime
-            val dir = File(downloadsDir, "HoursTracker" + File.separator + safeName)
-            dir.mkdirs()
-            val out = File(dir, "session.xlsx")
-            val fos = FileOutputStream(out)
-            fos.write(bytes)
-            fos.close()
+        jobSites.forEach { site ->
+            val sessions = database.workSessionDao().getSessionsForJobSite(site.id).first()
+            val out = writeProjectXlsx(site, sessions)
             written.add(out)
-            Log.d("HoursTracker", "wrote ${out.getAbsolutePath()}")
+            Log.d("HoursTracker", "refreshed ${out.getAbsolutePath()} (${sessions.size} rows)")
         }
         return written
     }
 
-    private fun buildSingleSessionXlsBytes(
-        s: WorkSession,
-        jobSites: List<JobSite>
-    ): ByteArray {
-        val job = jobSites.find { it.id == s.jobSiteId }
-        val minutes = durationMinutes(s.startTime, s.endTime) - s.breakMinutes
-        // Two-column label/value worksheet.
-        val data = ArrayList<Pair<String, String>>()
-        data.add("Date" to s.date)
-        data.add("Job site" to (job?.name ?: "Unknown"))
-        data.add("Start" to s.startTime)
-        data.add("End" to s.endTime)
-        data.add("Break (min)" to s.breakMinutes.toString())
-        data.add("Worked (min)" to minutes.toString())
-        if (!s.notes.isNullOrBlank()) data.add("Notes" to s.notes)
-        return buildXlsx(data)
+    private fun writeProjectXlsx(site: JobSite, sessions: List<WorkSession>): File {
+        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val dir = File(downloadsDir, "HoursTracker")
+        dir.mkdirs()
+        val safeName = site.name.replace("/", "-").replace("\\", "-").trim() + ".xlsx"
+        val out = File(dir, safeName)
+        val bytes = buildXlsx(buildProjectRows(site, sessions))
+        val fos = FileOutputStream(out)
+        try {
+            fos.write(bytes)
+        } finally {
+            fos.close()
+        }
+        return out
     }
 
-    private fun buildXlsx(data: List<Pair<String, String>>): ByteArray {
+    private fun buildProjectRows(site: JobSite, sessions: List<WorkSession>): List<List<String>> {
+        val rows = ArrayList<List<String>>()
+        rows.add(listOf("Date", "Start", "End", "Break (min)", "Worked (min)", "Notes"))
+        sessions.forEach { s ->
+            val worked = durationMinutes(s.startTime, s.endTime) - s.breakMinutes
+            rows.add(
+                listOf(
+                    s.date,
+                    s.startTime,
+                    s.endTime,
+                    s.breakMinutes.toString(),
+                    worked.toString(),
+                    s.notes ?: ""
+                )
+            )
+        }
+        return rows
+    }
+
+    private fun buildXlsx(rows: List<List<String>>): ByteArray {
         // Generate a minimal but valid OOXML .xlsx (a ZIP of standard XML parts).
         val bos = ByteArrayOutputStream()
         ZipOutputStream(bos).use { zos ->
@@ -369,13 +344,15 @@ class HoursViewModel @Inject constructor(
             val sheet = StringBuilder()
             sheet.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n")
             sheet.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>")
-            data.forEachIndexed { i, (label, value) ->
+            rows.forEachIndexed { i, row ->
                 val r = i + 1
                 sheet.append("<row r=\"").append(r).append("\">")
-                sheet.append("<c r=\"A").append(r).append("\" t=\"inlineStr\"><is><t>")
-                    .append(xmlEscape(label)).append("</t></is></c>")
-                sheet.append("<c r=\"B").append(r).append("\" t=\"inlineStr\"><is><t>")
-                    .append(xmlEscape(value)).append("</t></is></c>")
+                row.forEachIndexed { c, cell ->
+                    val col = ('A'.code + c).toChar()
+                    sheet.append("<c r=\"").append(col).append(r)
+                        .append("\" t=\"inlineStr\"><is><t>")
+                        .append(xmlEscape(cell)).append("</t></is></c>")
+                }
                 sheet.append("</row>")
             }
             sheet.append("</sheetData></worksheet>")
