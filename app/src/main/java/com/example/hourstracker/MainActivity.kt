@@ -66,6 +66,9 @@ class MainActivity : Activity() {
     private var jobSites = mutableListOf<JobSite>()
     private var sessions = mutableListOf<WorkSession>()
     private var drawerOpen = false
+    private var projectsExpanded = false
+    private var filteredSiteId: Int? = null // when set, Tasks tab shows only this project's tasks
+    private var expandedProjectId: Int? = null // when set, its tasks show inline under the project row
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var tickerRunning = false
@@ -206,7 +209,7 @@ class MainActivity : Activity() {
         return out
     }
 
-    private fun addSite(name: String, location: String) {
+    private fun addSite(name: String, location: String = "") {
         val cv = android.content.ContentValues()
         cv.put("name", name)
         cv.put("location", if (location.isBlank()) null else location)
@@ -577,16 +580,67 @@ private fun stopClock(jobSiteId: Int) {
     private fun openDrawer() { drawerScrim?.visibility = View.VISIBLE; drawerPanel?.visibility = View.VISIBLE; drawerOpen = true }
     private fun closeDrawer() { drawerScrim?.visibility = View.GONE; drawerPanel?.visibility = View.GONE; drawerOpen = false }
 
-    // Tasks tab content: total header + session cards + Add Task button.
+    // Inline list of a single project's tasks, shown under its row in the drawer.
+    private fun buildProjectTasksInline(siteId: Int): View {
+        val site = jobSites.find { it.id == siteId }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val siteSessions = sessions.filter { it.jobSiteId == siteId }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = rounded(if (isDark) 0xFF1B1F26.toInt() else 0xFFF0F2F7.toInt(), 12)
+        }
+        val totalMinutes = siteSessions.sumOf { workedMinutes(it) }
+        val hi = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        hi.addView(TextView(this).apply { text = "${site?.name ?: "Project"} — ${siteSessions.size} tasks"; textSize = 13f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+        header.addView(hi, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(pill("${formatMinutesShort(totalMinutes)}", primaryContainerColor, onPrimaryContainerColor))
+        col.addView(header)
+        if (siteSessions.isEmpty()) {
+            col.addView(TextView(this).apply {
+                text = "No tasks for this project yet"; textSize = 13f; setTextColor(onSurfaceVariantColor)
+                setPadding(0, dp(8), 0, dp(8))
+            })
+        } else {
+            siteSessions.forEach { s -> col.addView(sessionCard(s)) }
+        }
+        return col
+    }
+
+    // Tasks tab content: optional project filter header + total header + session cards.
     private fun buildTasksTab(): View {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        if (sessions.isEmpty()) {
+
+        // If a project filter is active, show a back header naming the project.
+        val filterId = filteredSiteId
+        val filteredSessions = if (filterId != null) sessions.filter { it.jobSiteId == filterId } else sessions
+        val filterSite = filterId?.let { id -> jobSites.find { it.id == id } }
+        if (filterSite != null) {
+            col.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = rounded(surfaceVariantColor, 14)
+                setOnClickListener { filteredSiteId = null; renderAll(); if (drawerOpen) openDrawer() }
+            }.also { back ->
+                back.addView(TextView(this).apply {
+                    text = "← All Tasks"; textSize = 14f; setTypeface(null, Typeface.BOLD)
+                    setTextColor(primaryColor); setPadding(0, dp(2), dp(10), dp(2))
+                })
+                back.addView(dotView(parseHex(filterSite.color), 12))
+                back.addView(TextView(this).apply {
+                    text = " ${filterSite.name}"; textSize = 16f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            })
+        }
+
+        if (filteredSessions.isEmpty()) {
             col.addView(TextView(this).apply {
-                text = "No tasks recorded yet"; textSize = 14f; setTextColor(onSurfaceVariantColor)
+                text = if (filterSite != null) "No tasks for this project yet" else "No tasks recorded yet"
+                textSize = 14f; setTextColor(onSurfaceVariantColor)
                 gravity = Gravity.CENTER; setPadding(0, dp(20), 0, dp(20))
             })
         } else {
-            val totalMinutes = sessions.sumOf { workedMinutes(it) }
+            val totalMinutes = filteredSessions.sumOf { workedMinutes(it) }
             val header = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -594,12 +648,12 @@ private fun stopClock(jobSiteId: Int) {
             }
             header.addView(dotView(primaryColor, 10))
             val hi = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
-            hi.addView(TextView(this).apply { text = "${sessions.size} tasks"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+            hi.addView(TextView(this).apply { text = "${filteredSessions.size} tasks"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
             header.addView(hi, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             header.addView(pill("Total ${formatMinutesShort(totalMinutes)}", primaryContainerColor, onPrimaryContainerColor))
             col.addView(header)
 
-            sessions.forEach { s -> col.addView(sessionCard(s)) }
+            filteredSessions.forEach { s -> col.addView(sessionCard(s)) }
         }
         return col
     }
@@ -623,7 +677,7 @@ private fun stopClock(jobSiteId: Int) {
                 setTextColor(if (active) onPrimaryContainerColor else onSurfaceVariantColor)
                 gravity = Gravity.CENTER; setPadding(dp(18), dp(10), dp(18), dp(10))
                 background = rounded(if (active) primaryColor else 0x00000000, 12)
-                setOnClickListener { if (drawerTab != idx) { drawerTab = idx; renderAll(); if (drawerOpen) openDrawer() } }
+                setOnClickListener { if (drawerTab != idx) { drawerTab = idx; filteredSiteId = null; renderAll(); if (drawerOpen) openDrawer() } }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         col.addView(tabs, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(16) })
@@ -634,25 +688,56 @@ private fun stopClock(jobSiteId: Int) {
         col.addView(TextView(this).apply { text = "Projects"; textSize = 22f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
         col.addView(TextView(this).apply { text = "Your job sites"; textSize = 13f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(2), 0, dp(12)) })
 
-        if (jobSites.isEmpty()) {
-            col.addView(TextView(this).apply { text = "No projects yet. Add one."; textSize = 14f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(6), 0, dp(6)) })
+        // Tapping Projects expands the project list inline; Add Project always sits at its top.
+        col.addView(drawerButton("Projects") {
+            projectsExpanded = !projectsExpanded; renderAll(); if (drawerOpen) openDrawer()
+        })
+        if (projectsExpanded) {
+            col.addView(drawerButton("＋ Add Project") { closeDrawer(); showAddProject() })
+            if (jobSites.isEmpty()) {
+                col.addView(TextView(this).apply { text = "No projects yet. Add one."; textSize = 14f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(6), 0, dp(6)) })
+            }
+            jobSites.sortedBy { it.name }.forEach { site ->
+                col.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(14), dp(12), dp(14), dp(12))
+                    background = rounded(surfaceVariantColor, 14)
+                    isClickable = true
+                    // Tap: expand/collapse this project's tasks inline. Long-press: project actions.
+                    setOnClickListener {
+                        expandedProjectId = if (expandedProjectId == site.id) null else site.id
+                        renderAll(); if (drawerOpen) openDrawer()
+                    }
+                    setOnLongClickListener {
+                        val actions = arrayOf("Rename", "Delete", "Cancel")
+                        AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+                            .setTitle(site.name)
+                            .setItems(actions) { _, w ->
+                                when (actions[w]) {
+                                    "Rename" -> showRename(site)
+                                    "Delete" -> AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+                                        .setTitle("Delete ${site.name}?")
+                                        .setMessage("Tasks will stay; the project is removed.")
+                                        .setPositiveButton("Delete") { _, _ -> deleteSite(site.id) }
+                                        .setNegativeButton("Cancel", null)
+                                        .show()
+                                    else -> {}
+                                }
+                            }
+                            .show()
+                        true
+                    }
+                }.also { row ->
+                    val ci = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    ci.addView(TextView(this).apply { text = site.name; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+                    if (!site.location.isNullOrBlank()) ci.addView(TextView(this).apply { text = site.location; textSize = 12f; setTextColor(onSurfaceVariantColor) })
+                    row.addView(ci, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                })
+                if (expandedProjectId == site.id) {
+                    col.addView(buildProjectTasksInline(site.id))
+                }
+            }
         }
-        jobSites.sortedBy { it.name }.forEach { site ->
-            col.addView(LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(12), dp(14), dp(12))
-                background = rounded(surfaceVariantColor, 14)
-            }.also { row ->
-                row.addView(dotView(parseHex(site.color), 12))
-                val ci = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
-                ci.addView(TextView(this).apply { text = site.name; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
-                if (!site.location.isNullOrBlank()) ci.addView(TextView(this).apply { text = site.location; textSize = 12f; setTextColor(onSurfaceVariantColor) })
-                row.addView(ci, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            })
-        }
-
-        col.addView(drawerButton("＋ Add Project") { closeDrawer(); showAddProject() })
-        if (jobSites.isNotEmpty()) col.addView(drawerButton("Manage Projects") { closeDrawer(); showManageProjects() })
         col.addView(drawerButton("Export Date Range") { closeDrawer(); showExportRange() })
         col.addView(drawerButton(themeLabel()) { toggleDark() })
         }
@@ -715,49 +800,25 @@ private fun stopClock(jobSiteId: Int) {
     // ==================== DIALOGS ====================
 
     private fun showAddProject() {
-        val name = EditText(this).apply { hint = "Project name"; setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor) }
-        val loc = EditText(this).apply { hint = "Location (optional)"; setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor) }
+        val name = EditText(this).apply {
+            hint = "Project name"; textSize = 18f
+            setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
+        }
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(28), dp(16), dp(28), dp(8))
+        }
+        name.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        wrap.addView(name)
         AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Add Project")
-            .setView(fieldColumn(name, loc))
+            .setView(wrap)
             .setPositiveButton("Add") { _, _ ->
-                if (name.text.toString().isNotBlank()) { addSite(name.text.toString().trim(), loc.text.toString()) }
+                if (name.text.toString().isNotBlank()) { addSite(name.text.toString().trim()) }
                 else statusMessage = "Project name can't be empty"
             }
             .setNegativeButton("Cancel", null)
             .show()
-    }
-
-    private fun showManageProjects() {
-        val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        jobSites.forEach { site ->
-            rows.addView(LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(4), dp(8), dp(4), dp(8))
-            }.also { row ->
-                row.addView(dotView(parseHex(site.color), 10))
-                row.addView(TextView(this).apply { text = site.name; textSize = 14f; setTextColor(onSurfaceColor) },
-                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(10), 0, 0, 0) })
-                row.addView(textAction("Rename") { showRename(site) })
-                row.addView(TextView(this).apply {
-                    text = "Delete"; textSize = 13f; setTypeface(null, Typeface.BOLD)
-                    setTextColor(errorColor); setPadding(dp(8), dp(4), dp(8), dp(4))
-                    setOnClickListener {
-                        AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
-                            .setTitle("Delete ${site.name}?")
-                            .setMessage("Tasks will stay; the project is removed.")
-                            .setPositiveButton("Delete") { _, _ -> deleteSite(site.id) }
-                            .setNegativeButton("Cancel", null)
-                            .show()
-                    }
-                })
-            })
-        }
-        AlertDialog.Builder(this, pickerDialogThemeId())
-            .setTitle("Manage Projects")
-            .setView(rows)
-            .setPositiveButton("Close", null)
-            .show()
+        name.requestFocus()
     }
 
     private fun showRename(site: JobSite) {
