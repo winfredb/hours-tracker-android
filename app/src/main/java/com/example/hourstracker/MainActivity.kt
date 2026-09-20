@@ -61,12 +61,15 @@ class MainActivity : Activity() {
     private var segmentStartMs = 0L
     private var accumulatedMs = 0L
     private var statusMessage = ""
-    private var drawerTab = 0 // 0 = Projects, 1 = Tasks
+    private var drawerTab = 0 // menu selection: 0 = Projects, 1 = Tasks, 2 = Settings
+    private var navScreen = 0 // 0 = Home (clock), 1 = Projects, 2 = Tasks, 3 = Settings
 
     private var jobSites = mutableListOf<JobSite>()
     private var sessions = mutableListOf<WorkSession>()
     private var drawerOpen = false
     private var projectsExpanded = false
+    private var weeklyExpanded = false
+    private var overtimeExpanded = true
     private var filteredSiteId: Int? = null // when set, Tasks tab shows only this project's tasks
     private var expandedProjectId: Int? = null // when set, its tasks show inline under the project row
     private var expandedTaskId: Int? = null // when set, the task card reveals its start/stop times
@@ -121,6 +124,15 @@ class MainActivity : Activity() {
         }
     }
 
+    // Back button / back gesture: close the drawer, then leave a submenu to the main menu.
+    override fun onBackPressed() {
+        when {
+            drawerOpen -> closeDrawer()
+            navScreen != 0 -> { navScreen = 0; renderAll() }
+            else -> @Suppress("DEPRECATION") super.onBackPressed()
+        }
+    }
+
     // ==================== THEME ====================
 
     private val density get() = resources.displayMetrics.density
@@ -132,15 +144,15 @@ class MainActivity : Activity() {
         if (resId > 0) resources.getDimensionPixelSize(resId) else 0
     }
 
-    private val bgColor get() = if (isDark) 0xFF101318.toInt() else 0xFFF7F8FB.toInt()
-    private val surfaceColor get() = if (isDark) 0xFF101318.toInt() else 0xFFF7F8FB.toInt()
-    private val surfaceVariantColor get() = if (isDark) 0xFF23262E.toInt() else 0xFFE6E9F2.toInt()
-    private val onSurfaceColor get() = if (isDark) 0xFFE3E5E9.toInt() else 0xFF1B1C20.toInt()
-    private val onSurfaceVariantColor get() = if (isDark) 0xFFBEC3CC.toInt() else 0xFF3D4048.toInt()
-    private val primaryColor get() = if (isDark) 0xFF9EC3FF.toInt() else 0xFF2A5BD7.toInt()
-    private val primaryContainerColor get() = if (isDark) 0xFF1E3B8F.toInt() else 0xFFD9E3FF.toInt()
-    private val onPrimaryContainerColor get() = if (isDark) 0xFFD9E3FF.toInt() else 0xFF0B1F53.toInt()
-    private val errorColor get() = if (isDark) 0xFFF0A8A0.toInt() else 0xFFC62828.toInt()
+    private val bgColor get() = if (isDark) 0xFF0B0D12.toInt() else 0xFFF4F6FA.toInt()
+    private val surfaceColor get() = if (isDark) 0xFF0B0D12.toInt() else 0xFFF4F6FA.toInt()
+    private val surfaceVariantColor get() = if (isDark) 0xFF1C212B.toInt() else 0xFFEDF0F6.toInt()
+    private val onSurfaceColor get() = if (isDark) 0xFFECEEF2.toInt() else 0xFF14161C.toInt()
+    private val onSurfaceVariantColor get() = if (isDark) 0xFF9BA3B2.toInt() else 0xFF5B6272.toInt()
+    private val primaryColor get() = if (isDark) 0xFF8FB6FF.toInt() else 0xFF2A5BD7.toInt()
+    private val primaryContainerColor get() = if (isDark) 0xFF1B3576.toInt() else 0xFFDCE6FF.toInt()
+    private val onPrimaryContainerColor get() = if (isDark) 0xFFDCE6FF.toInt() else 0xFF0A1C4D.toInt()
+    private val errorColor get() = if (isDark) 0xFFF2A69E.toInt() else 0xFFC62828.toInt()
 
     private fun parseHex(hex: String): Int {
         val h = hex.removePrefix("#").trim()
@@ -160,6 +172,18 @@ class MainActivity : Activity() {
             setShape(GradientDrawable.RECTANGLE)
             setColor(color)
             setCornerRadius(dp(radiusDp).toFloat())
+        }
+    }
+
+    // Modern card surface: rounded fill with a hairline outline + soft elevation.
+    private fun card(radiusDp: Int): GradientDrawable {
+        val fill = if (isDark) 0xFF161A22.toInt() else 0xFFFFFFFF.toInt()
+        val stroke = if (isDark) 0xFF262C38.toInt() else 0xFFE7EAF2.toInt()
+        return GradientDrawable().apply {
+            setShape(GradientDrawable.RECTANGLE)
+            setColor(fill)
+            setCornerRadius(dp(radiusDp).toFloat())
+            setStroke(dp(1), stroke)
         }
     }
 
@@ -247,7 +271,47 @@ class MainActivity : Activity() {
         return s.trimEnd('0').trimEnd('.')
     }
 
+    // ===== Weekly overtime configuration (global, job-agnostic) =====
+    // overtimeThreshold = hours/week before overtime applies (default 40)
+    // overtimeRate = multiplier applied to hours beyond the threshold (default 1.5)
+    private val overtimeThresholdHours: Double
+        get() = prefs.getFloat("ot_threshold_hours", 40f).toDouble()
+    private val overtimeRateVal: Double
+        get() = prefs.getFloat("ot_rate", 1.5f).toDouble()
+
+    // Compute weekly overtime summary across all jobs for the given week.
+    // Returns (totalMin, otMin, basePay, otPay).
+    private fun weeklySummary(weekSunday: String): Quad {
+        val weekSessions = sessions.filter { sundayOf(it.date) == weekSunday }
+        val totalMin = weekSessions.sumOf { workedMinutes(it) }
+        val thresholdSec = (overtimeThresholdHours * 60).toInt()
+        val regMin = minOf(totalMin, thresholdSec)
+        val otMin = (totalMin - regMin).coerceAtLeast(0)
+        var basePay = 0.0
+        var otPay = 0.0
+        // Each job bills its own wage; OT minutes get the multiplier on top.
+        jobSites.forEach { site ->
+            val siteMin = weekSessions.filter { it.jobSiteId == site.id }.sumOf { workedMinutes(it) }
+            if (siteMin > 0) {
+                val wage = site.hourlyWage?.trim()?.toDoubleOrNull() ?: return@forEach
+                val siteReg = minOf(siteMin, regMin)
+                val siteOt = siteMin - siteReg
+                basePay += siteReg / 60.0 * wage
+                otPay += siteOt / 60.0 * wage * overtimeRateVal
+            }
+        }
+        return Quad(totalMin, otMin, basePay, otPay)
+    }
+
+    // Simple 4-value holder (keeps weeklySummary readable).
+    private data class Quad(val totalMin: Int, val otMin: Int, val basePay: Double, val otPay: Double)
+
     private fun deleteSite(id: Int) {
+        // Remove this project's exported workbook along with the project.
+        jobSites.find { it.id == id }?.let { site ->
+            val safeName = site.name.replace("/", "-").replace("\\\\", "-").trim() + ".xlsx"
+            deleteDownload("Tasks", safeName)
+        }
         db.writableDatabase.delete("job_sites", "id=?", arrayOf(id.toString()))
         refreshData(); renderAll()
     }
@@ -261,8 +325,13 @@ class MainActivity : Activity() {
         cv.put("break_minutes", session.breakMinutes)
         cv.put("notes", session.notes)
         db.writableDatabase.insert("work_sessions", null, cv)
-        refreshData(); renderAll()
-        statusMessage = "Saved ✓ ${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}"
+        refreshData()
+        // Write only this task's project workbook as soon as the task is saved.
+        val exportErr = try { exportSite(session.jobSiteId); null } catch (e: Exception) { e.message }
+        statusMessage = if (exportErr == null)
+            "Saved ✓ ${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}"
+        else "Saved ✓ (export failed: $exportErr)"
+        renderAll()
     }
 
     private fun updateSession(session: WorkSession) {
@@ -274,14 +343,22 @@ class MainActivity : Activity() {
             put("break_minutes", session.breakMinutes)
             db.writableDatabase.update("work_sessions", this, "id=?", arrayOf(session.id.toString()))
         }
-        refreshData(); renderAll()
-        statusMessage = "Updated ✓ ${isoDateDisplay(session.date)}"
+        refreshData()
+        // Keep only this task's project workbook in sync after an edit.
+        val exportErr = try { exportSite(session.jobSiteId); null } catch (e: Exception) { e.message }
+        statusMessage = if (exportErr == null)
+            "Updated ✓ ${isoDateDisplay(session.date)}"
+        else "Updated ✓ (export failed: $exportErr)"
+        renderAll()
     }
 
     private fun deleteSession(session: WorkSession) {
         db.writableDatabase.delete("work_sessions", "id=?", arrayOf(session.id.toString()))
-        refreshData(); renderAll(); exportAll()
-        statusMessage = "Deleted ✓"
+        refreshData()
+        // Refresh (or remove) only this task's project workbook.
+        val exportErr = try { exportSite(session.jobSiteId); null } catch (e: Exception) { e.message }
+        statusMessage = if (exportErr == null) "Deleted ✓" else "Deleted ✓ (export failed: $exportErr)"
+        renderAll()
     }
 
     // ==================== TIMER ====================
@@ -362,7 +439,6 @@ private fun stopClock(jobSiteId: Int) {
     insertSession(WorkSession(id = 0, jobSiteId = jobSiteId, date = today, startTime = start, endTime = end, breakMinutes = 0, notes = "clock"))
     startedAt = ""; segmentStartMs = 0L; accumulatedMs = 0L
     persistClock()
-    exportAll() // xlsx per-project dump is written only when the timer is stopped
     renderAll()
 }
 
@@ -379,7 +455,7 @@ private fun stopClock(jobSiteId: Int) {
         // background. Paint a dark band across the very top strip so they always
         // contrast. Dark mode already uses a dark background, so the band blends
         // in seamlessly there too. (No platform status-bar API needed.)
-        val topBand = View(this).apply { setBackgroundColor(0xFF101318.toInt()) }
+        val topBand = View(this).apply { setBackgroundColor(0xFF0B0D12.toInt()) }
         val bandLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, topPad, Gravity.TOP)
         bandLp.topMargin = -topPad // pull up to the very top, behind the content
         root.addView(topBand, bandLp)
@@ -392,6 +468,43 @@ private fun stopClock(jobSiteId: Int) {
         scroll.addView(column)
         root.addView(scroll)
 
+        // ---- ☰ button (top-right), available on every screen ----
+        val menuBtn = TextView(this).apply {
+            id = 3
+            text = "☰"; textSize = 30f; setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor); gravity = Gravity.CENTER
+            background = rounded(surfaceVariantColor, 28)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            setOnClickListener { openDrawer() }
+        }
+        root.addView(menuBtn, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.END))
+
+        if (navScreen == 0) {
+            // ==================== HOME SCREEN (clock) ====================
+            buildHomeScreen(column)
+        } else {
+            // ==================== SECTION FULL SCREEN ====================
+            buildSectionScreen(column)
+        }
+
+        // ---- drawer scrim + panel (menu only) ----
+        drawerScrim = View(this).apply {
+            setBackgroundColor(0x66000000); visibility = View.GONE
+            setOnClickListener { closeDrawer() }
+        }
+        root.addView(drawerScrim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        val panelView = buildDrawer()
+        drawerPanel = panelView
+        root.addView(panelView, FrameLayout.LayoutParams(dp(280), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
+        panelView.visibility = View.GONE
+
+        setContentView(root)
+        if (drawerOpen) openDrawer()
+    }
+
+    // Home screen: clock halo + stop + add task + status.
+    private fun buildHomeScreen(column: LinearLayout) {
         // ---- clock section ----
         val stateLbl = TextView(this).apply {
             id = 1; textSize = 16f; gravity = Gravity.CENTER
@@ -461,32 +574,6 @@ private fun stopClock(jobSiteId: Int) {
         }
 
         column.addView(View(this).apply { }, LinearLayout.LayoutParams(1, dp(8)))
-
-        // ---- floating ☰ (top-right) ----
-        val menuBtn = TextView(this).apply {
-            id = 3
-            text = "☰"; textSize = 30f; setTypeface(null, Typeface.BOLD)
-            setTextColor(onSurfaceColor); gravity = Gravity.CENTER
-            background = rounded(surfaceVariantColor, 28)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            setOnClickListener { openDrawer() }
-        }
-        root.addView(menuBtn, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.END))
-
-        // ---- drawer scrim + panel ----
-        drawerScrim = View(this).apply {
-            setBackgroundColor(0x66000000); visibility = View.GONE
-            setOnClickListener { closeDrawer() }
-        }
-        root.addView(drawerScrim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-
-        val panelView = buildDrawer()
-        drawerPanel = panelView
-        root.addView(panelView, FrameLayout.LayoutParams(dp(300), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
-        panelView.visibility = View.GONE
-
-        setContentView(root)
-        if (drawerOpen) openDrawer()
     }
 
     private var drawerScrim: View? = null
@@ -533,7 +620,7 @@ private fun stopClock(jobSiteId: Int) {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), if (expanded) dp(10) else dp(6))
-            background = rounded(if (isDark) 0xFF1B1F26.toInt() else 0xFFFFFFFF.toInt(), 20)
+            background = card(20)
             setMargins(0, dp(8), 0, 0)
             // Tap: expand/collapse start/stop times.
             setOnClickListener {
@@ -628,7 +715,7 @@ private fun stopClock(jobSiteId: Int) {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(10), dp(14), dp(10))
-            background = rounded(if (isDark) 0xFF1B1F26.toInt() else 0xFFF0F2F7.toInt(), 12)
+            background = rounded(surfaceVariantColor, 14)
         }
         val totalMinutes = siteSessions.sumOf { workedMinutes(it) }
         val hi = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -644,6 +731,47 @@ private fun stopClock(jobSiteId: Int) {
             })
         } else {
             siteSessions.forEach { s -> col.addView(sessionCard(s)) }
+        }
+        return col
+    }
+
+    // Weekly summary card: combined hours + pay across all jobs, with job-agnostic OT.
+    // Collapsible — tap the header to expand/collapse the detail rows.
+    private fun buildWeeklySummaryCard(): View {
+        val weekSunday = sundayOf(LocalDate.now().toString())
+        val s = weeklySummary(weekSunday)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(6), dp(14), dp(14))
+            background = rounded(primaryContainerColor, 16)
+            setMargins(0, 0, 0, dp(8))
+        }
+        val hasOt = s.otMin > 0
+        val totalPay = s.basePay + s.otPay
+        // Tappable header row (no chevron/arrow).
+        col.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setMinimumHeight(dp(40))
+            setOnClickListener { weeklyExpanded = !weeklyExpanded; renderAll(); if (drawerOpen) openDrawer() }
+            addView(TextView(this@MainActivity).apply {
+                text = "This week"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onPrimaryContainerColor)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        })
+        if (weeklyExpanded) {
+            fun row(label: String, value: String) {
+                col.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(6), 0, 0)
+                }.also { r ->
+                    r.addView(TextView(this).apply { text = label; textSize = 13f; setTextColor(onPrimaryContainerColor) },
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    r.addView(TextView(this).apply { text = value; textSize = 13f; setTypeface(null, Typeface.BOLD); setTextColor(onPrimaryContainerColor) })
+                })
+            }
+            row("Hours", formatMinutesShort(s.totalMin))
+            if (hasOt) row("Overtime", "${formatMinutesShort(s.otMin)} @${formatWage(overtimeRateVal)}x")
+            row(if (hasOt) "Overtime pay" else "Total pay", "\$${String.format(Locale.US, "%.2f", if (hasOt) s.otPay else totalPay)}")
+            if (hasOt) row("Total pay", "\$${String.format(Locale.US, "%.2f", totalPay)}")
         }
         return col
     }
@@ -698,35 +826,117 @@ private fun stopClock(jobSiteId: Int) {
         return col
     }
 
+    private fun buildSettingsTab(): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(TextView(this).apply { text = "Settings"; textSize = 22f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
+        col.addView(TextView(this).apply { text = "App preferences"; textSize = 13f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(2), 0, dp(12)) })
+
+        // Overtime submenu (expandable).
+        col.addView(drawerButton("Overtime") {
+            overtimeExpanded = !overtimeExpanded; renderAll(); if (drawerOpen) openDrawer()
+        })
+        if (overtimeExpanded) {
+            val th = EditText(this).apply { setText(formatWage(overtimeThresholdHours)); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL }
+            val rt = EditText(this).apply { setText(formatWage(overtimeRateVal)); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL }
+            // Values apply immediately as the user edits (no Save button).
+            th.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    prefs.edit().putFloat("ot_threshold_hours", th.text.toString().trim().toDoubleOrNull()?.toFloat() ?: 40f).apply()
+                }
+                override fun afterTextChanged(s: android.text.Editable?) {}
+            })
+            rt.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    prefs.edit().putFloat("ot_rate", rt.text.toString().trim().toDoubleOrNull()?.toFloat() ?: 1.5f).apply()
+                }
+                override fun afterTextChanged(s: android.text.Editable?) {}
+            })
+            col.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(4), 0, 0)
+            }.also { box ->
+                box.addView(TextView(this).apply { text = "Overtime starts after (hrs/week)"; textSize = 12f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(2), 0, dp(2)) })
+                box.addView(th)
+                box.addView(View(this).apply {}, LinearLayout.LayoutParams(1, dp(10)))
+                box.addView(TextView(this).apply { text = "Overtime rate (e.g. 1.5)"; textSize = 12f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(2), 0, dp(2)) })
+                box.addView(rt)
+            })
+        }
+
+        // Keep theme toggle available here too (was previously only under Projects).
+        col.addView(drawerButton(themeLabel()) { toggleDark() })
+        return col
+    }
+
     private fun buildDrawer(): View {
-        val frame = FrameLayout(this).apply { setBackgroundColor(if (isDark) 0xFF14181D.toInt() else 0xFFFFFFFF.toInt()) }
-        val panel = android.widget.ScrollView(this)
+        val frame = FrameLayout(this).apply { setBackgroundColor(if (isDark) 0xFF12161E.toInt() else 0xFFFFFFFF.toInt()) }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(24), dp(20), dp(24)) }
-        panel.addView(col)
-        frame.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        frame.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // ---- tab bar: Projects | Tasks ----
-        val tabs = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-            background = rounded(surfaceVariantColor, 14)
+        // ---- flat hamburger menu: Projects / Tasks / Settings ----
+        // Selecting a menu closes the drawer and opens that section full screen.
+        fun menuButton(idx: Int, name: String) {
+            col.addView(TextView(this).apply {
+                text = name; textSize = 20f; setTypeface(null, Typeface.BOLD)
+                setTextColor(onSurfaceColor)
+                gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(16), dp(14), dp(16))
+                setOnClickListener {
+                    drawerTab = idx; navScreen = idx + 1
+                    filteredSiteId = null
+                    closeDrawer(); renderAll()
+                }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-        listOf(0 to "Projects", 1 to "Tasks").forEach { (idx, name) ->
-            val active = drawerTab == idx
-            tabs.addView(TextView(this).apply {
-                text = name; textSize = 14f; setTypeface(null, Typeface.BOLD)
-                setTextColor(if (active) onPrimaryContainerColor else onSurfaceVariantColor)
-                gravity = Gravity.CENTER; setPadding(dp(18), dp(10), dp(18), dp(10))
-                background = rounded(if (active) primaryColor else 0x00000000, 12)
-                setOnClickListener { if (drawerTab != idx) { drawerTab = idx; filteredSiteId = null; renderAll(); if (drawerOpen) openDrawer() } }
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        }
-        col.addView(tabs, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(16) })
+        menuButton(0, "Projects")
+        menuButton(1, "Tasks")
+        menuButton(2, "Settings")
 
-        if (drawerTab == 1) {
-            col.addView(buildTasksTab())
-        } else {
-        col.addView(TextView(this).apply { text = "Projects"; textSize = 22f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
-        col.addView(TextView(this).apply { text = "Your job sites"; textSize = 13f; setTextColor(onSurfaceVariantColor); setPadding(0, dp(2), 0, dp(12)) })
+        // Export lives in the main menu (opens its dialog directly).
+        col.addView(TextView(this).apply {
+            text = "Export"; textSize = 20f; setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor)
+            gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(16), dp(14), dp(16))
+            setOnClickListener { closeDrawer(); showExportRange() }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        // Spacer pushes the credit line to the bottom of the (full-height) menu.
+        col.addView(View(this).apply {}, LinearLayout.LayoutParams(1, 0).apply { weight = 1f })
+
+        val footer = TextView(this).apply {
+            text = "vibe coded by pooh"; textSize = 11f; setTextColor(onSurfaceVariantColor)
+            setPadding(0, dp(8), 0, 0)
+        }
+        col.addView(footer)
+        return frame
+    }
+
+    // Full-screen section page: back header + the selected section's content.
+    private fun buildSectionScreen(column: LinearLayout) {
+        // Back + title header.
+        column.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(16))
+            setOnClickListener { navScreen = 0; renderAll() }
+        }.also { head ->
+            head.addView(TextView(this).apply {
+                text = "Home"; textSize = 16f; setTypeface(null, Typeface.BOLD); setTextColor(primaryColor)
+            })
+        })
+        when (drawerTab) {
+            0 -> column.addView(buildProjectsTab())
+            1 -> column.addView(buildTasksTab())
+            2 -> column.addView(buildSettingsTab())
+        }
+    }
+
+    // Projects tab content: weekly summary + expandable project list + export entry.
+    private fun buildProjectsTab(): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        // This week summary (overtime is job-agnostic and shown per week).
+        col.addView(buildWeeklySummaryCard())
 
         // Tapping Projects expands the project list inline; Add Project always sits at its top.
         col.addView(drawerButton("Projects") {
@@ -741,7 +951,7 @@ private fun stopClock(jobSiteId: Int) {
                 col.addView(LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(14), dp(12), dp(14), dp(12))
-                    background = rounded(surfaceVariantColor, 14)
+                    background = card(14)
                     isClickable = true
                     // Tap: expand/collapse this project's tasks inline. Long-press: project actions.
                     setOnClickListener {
@@ -789,23 +999,13 @@ private fun stopClock(jobSiteId: Int) {
                 }
             }
         }
-        col.addView(drawerButton("Export Date Range") { closeDrawer(); showExportRange() })
-        col.addView(drawerButton(themeLabel()) { toggleDark() })
-        }
-
-        // footer, pinned to the bottom of the drawer
-        val footer = TextView(this).apply {
-            text = "vibe coded by pooh"; textSize = 11f; setTextColor(onSurfaceVariantColor)
-            gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(34))
-        }
-        frame.addView(footer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
-        return frame
+        return col
     }
 
     private fun drawerButton(textVal: String, onClick: () -> Unit): TextView = TextView(this).apply {
         text = textVal; textSize = 15f; setTypeface(null, Typeface.BOLD)
         setTextColor(primaryColor); gravity = Gravity.CENTER
-        background = rounded(surfaceVariantColor, 14)
+        background = card(14)
         setPadding(0, dp(14), 0, dp(14))
         setMargins(0, dp(12), 0, 0)
         setOnClickListener { onClick() }
@@ -1005,10 +1205,17 @@ private fun stopClock(jobSiteId: Int) {
         }
 
         val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(4)) }
-        listOf(date to "Tap to pick date (calendar)", start to "Tap to pick start (clock)", end to "Tap to pick end (clock)", brk to "Break (min)").forEach { (f, labelTxt) ->
-            f.hint = labelTxt; f.setHintTextColor(onSurfaceVariantColor); form.addView(f)
-            form.addView(View(this).apply {}, LinearLayout.LayoutParams(1, dp(6)))
+        fun addField(labelTxt: String, field: View) {
+            form.addView(TextView(this).apply {
+                text = labelTxt; textSize = 12f; setTextColor(onSurfaceVariantColor)
+                setPadding(0, dp(6), 0, dp(2))
+            })
+            form.addView(field)
         }
+        addField("Date", date)
+        addField("Start", start)
+        addField("End", end)
+        addField("Break", brk)
         form.addView(projLbl)
 
         AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
@@ -1109,22 +1316,37 @@ private fun stopClock(jobSiteId: Int) {
         val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}".trimEnd('/') + "/"
         val dirName = if (subdir.isBlank()) "HoursTracker" else "$subdir"
         if (Build.VERSION.SDK_INT >= 29) {
-            val cv = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, filename)
-                put(MediaStore.Downloads.RELATIVE_PATH, relFolder)
-                put(MediaStore.Downloads.IS_PENDING, 1)
-            }
-            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
-                ?: error("Could not create file entry")
-            try {
-                contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            // Reuse the existing entry when present so repeated writes overwrite the
+            // same file instead of MediaStore creating "Name (1).xlsx" copies.
+            val existing = contentResolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Downloads._ID),
+                "${MediaStore.Downloads.DISPLAY_NAME}=? AND ${MediaStore.Downloads.RELATIVE_PATH}=?",
+                arrayOf(filename, relFolder), null
+            )?.use { c -> if (c.moveToFirst()) c.getLong(0) else null }
+            val uri: Uri
+            if (existing != null) {
+                uri = android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, existing)
+                contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
                     ?: error("Could not open output stream")
-                cv.clear()
-                cv.put(MediaStore.Downloads.IS_PENDING, 0)
-                contentResolver.update(uri, cv, null, null)
-            } catch (e: Exception) {
-                contentResolver.delete(uri, null, null)
-                throw e
+            } else {
+                val cv = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                    put(MediaStore.Downloads.RELATIVE_PATH, relFolder)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
+                    ?: error("Could not create file entry")
+                try {
+                    contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                        ?: error("Could not open output stream")
+                    cv.clear()
+                    cv.put(MediaStore.Downloads.IS_PENDING, 0)
+                    contentResolver.update(uri, cv, null, null)
+                } catch (e: Exception) {
+                    contentResolver.delete(uri, null, null)
+                    throw e
+                }
             }
             val pathPart = (if (dirName.isBlank()) "" else "$dirName/") + filename
             return "Downloads/$pathPart" to uri
@@ -1134,6 +1356,23 @@ private fun stopClock(jobSiteId: Int) {
             sub.mkdirs()
             File(sub, filename).writeBytes(bytes)
             return "Downloads/${if (dirName.isBlank()) "" else "$dirName/"}${filename}" to Uri.fromFile(File(sub, filename))
+        }
+    }
+
+    /** Removes a previously exported file from Downloads/HoursTracker/<subdir>/<filename>. */
+    private fun deleteDownload(subdir: String, filename: String) {
+        try {
+            val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}"
+            if (Build.VERSION.SDK_INT >= 29) {
+                val sel = "${MediaStore.Downloads.DISPLAY_NAME}=? AND ${MediaStore.Downloads.RELATIVE_PATH}=?"
+                contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, sel, arrayOf(filename, relFolder))
+            } else {
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HoursTracker")
+                val sub = if (subdir.isBlank()) dir else File(dir, subdir)
+                File(sub, filename).delete()
+            }
+        } catch (e: Exception) {
+            // Non-fatal: the file may not exist or the OS may block deletion.
         }
     }
 
@@ -1158,19 +1397,41 @@ private fun stopClock(jobSiteId: Int) {
         }
     }
 
-    /** Writes one workbook per project into Downloads/HoursTracker/<Name>.xlsx after any session change. */
-    private fun exportAll() {
-        try {
-            jobSites.forEach { site ->
-                val siteSessions = sessions.filter { it.jobSiteId == site.id }.sortedWith(compareBy({ it.date }, { it.startTime }))
-                val safeName = site.name.replace("/", "-").replace("\\\\", "-").trim() + ".xlsx"
-                writeDownload("Tasks", safeName, buildXlsxSheets(listOf("Task" to buildRows(siteSessions))))
-            }
-            statusMessage = "Files written to Downloads/HoursTracker/Tasks ✓"
-        } catch (e: Exception) {
-            statusMessage = "Export FAILED: ${e.message}"
+    /** Writes (or removes) only this project's exported workbook — not every project's. */
+    private fun exportSite(siteId: Int) {
+        val site = jobSites.find { it.id == siteId } ?: return
+        val siteSessions = sessions.filter { it.jobSiteId == siteId }.sortedWith(compareBy({ it.date }, { it.startTime }))
+        val safeName = site.name.replace("/", "-").replace("\\\\", "-").trim() + ".xlsx"
+        if (siteSessions.isEmpty()) {
+            // No tasks left for this project — remove its stale export.
+            deleteDownload("Tasks", safeName)
+        } else {
+            // Clear any "Name (1).xlsx" copies left behind before writing the canonical file.
+            deleteDownloadCopies("Tasks", safeName)
+            writeDownload("Tasks", safeName, buildXlsxSheets(listOf("Task" to buildRows(siteSessions))))
         }
-        renderAll()
+    }
+
+    /** Deletes MediaStore entries like "Name (1).xlsx", "Name (2).xlsx" created by earlier duplicate inserts. */
+    private fun deleteDownloadCopies(subdir: String, canonicalName: String) {
+        if (Build.VERSION.SDK_INT < 29) return
+        try {
+            val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}"
+            val base = canonicalName.removeSuffix(".xlsx")
+            val pattern = "$base (%).xlsx"
+            val sel = "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? AND ${MediaStore.Downloads.RELATIVE_PATH}=?"
+            val ids = mutableListOf<Long>()
+            contentResolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Downloads._ID), sel, arrayOf(pattern, relFolder), null
+            )?.use { c -> while (c.moveToNext()) ids.add(c.getLong(0)) }
+            ids.forEach { id ->
+                contentResolver.delete(
+                    android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id), null, null)
+            }
+        } catch (e: Exception) {
+            // Non-fatal cleanup.
+        }
     }
 
     private fun buildRows(rows: List<WorkSession>): List<List<String>> {
@@ -1199,15 +1460,18 @@ private fun stopClock(jobSiteId: Int) {
         // ==================== DATE-RANGE EXPORT ====================
 
         private fun showExportRange() {
+            // Each preset resolves its [from, to] range and exports it; the
+            // picker-based options open a dialog first. Lambdas are typed
+            // () -> Unit, so the range must be consumed here explicitly.
             val opts = listOf(
-                "This week" to { rangeForPreset("thisweek") },
-                "Last week" to { rangeForPreset("lastweek") },
+                "This week" to { rangeForPreset("thisweek").let { exportRange(it.first, it.second) } },
+                "Last week" to { rangeForPreset("lastweek").let { exportRange(it.first, it.second) } },
                 "2 weeks from date…" to { showTwoWeekFromDatePicker() },
-                "All time" to { rangeForPreset("all") },
+                "All time" to { rangeForPreset("all").let { exportRange(it.first, it.second) } },
                 "Custom range…" to { showCustomRangePicker() }
             )
             AlertDialog.Builder(this, pickerDialogThemeId())
-                .setTitle("Export date range")
+                .setTitle("Export")
                 .setItems(opts.map { it.first }.toTypedArray()) { _, which ->
                     opts[which].second()
                 }
