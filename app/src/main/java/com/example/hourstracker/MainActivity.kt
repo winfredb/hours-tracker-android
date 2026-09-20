@@ -525,15 +525,15 @@ private fun stopClock(jobSiteId: Int) {
         root.addView(scroll)
 
         // ---- ☰ button (top-right), available on every screen ----
+        // Plain glyph, no filled button chrome.
         val menuBtn = TextView(this).apply {
             id = 3
-            text = "☰"; textSize = 30f; setTypeface(null, Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt()); gravity = Gravity.CENTER
-            background = rounded(primaryColor, 28)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+            text = "☰"; textSize = 28f; setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor); gravity = Gravity.CENTER
+            setPadding(dp(10), dp(10), dp(10), dp(10))
             setOnClickListener { openDrawer() }
         }
-        root.addView(menuBtn, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.END))
+        root.addView(menuBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END))
 
         if (navScreen == 0) {
             // ==================== HOME SCREEN (clock) ====================
