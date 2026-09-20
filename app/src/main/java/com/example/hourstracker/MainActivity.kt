@@ -525,14 +525,21 @@ private fun stopClock(jobSiteId: Int) {
         root.addView(scroll)
 
         // ---- ☰ button (top-right), available on every screen ----
-        // Plain glyph, no filled button chrome.
-        val menuBtn = TextView(this).apply {
+        // Three plain bars (no filled button chrome, no glyph that can mis-render).
+        val menuBtn = FrameLayout(this).apply {
             id = 3
-            text = "☰"; textSize = 28f; setTypeface(null, Typeface.BOLD)
-            setTextColor(onSurfaceColor); gravity = Gravity.CENTER
-            setPadding(dp(10), dp(10), dp(10), dp(10))
             setOnClickListener { openDrawer() }
         }
+        val mstack = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+        }
+        fun mbar(margin: Int) {
+            mstack.addView(View(this).apply { background = rounded(onSurfaceColor, 2) },
+                LinearLayout.LayoutParams(dp(22), dp(3)).apply { topMargin = dp(margin) })
+        }
+        mbar(0); mbar(4); mbar(4)
+        menuBtn.addView(mstack, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         root.addView(menuBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.END))
 
         if (navScreen == 0) {
