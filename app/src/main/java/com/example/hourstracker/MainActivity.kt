@@ -580,12 +580,12 @@ private fun stopClock(jobSiteId: Int) {
         column.addView(stateLbl, lpCenter)
 
         val wrap = FrameLayout(this)
-        wrap.layoutParams = LinearLayout.LayoutParams(dp(224), dp(224)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(48) }
+        wrap.layoutParams = LinearLayout.LayoutParams(dp(176), dp(176)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(18) }
 
         val haloBack = GradientDrawable().apply { setShape(GradientDrawable.OVAL); setColor(0x24FF6D00) }
         val halo = View(this).apply { background = haloBack }
         haloGlowView = halo
-        wrap.addView(halo, FrameLayout.LayoutParams(dp(224), dp(224), Gravity.CENTER))
+        wrap.addView(halo, FrameLayout.LayoutParams(dp(176), dp(176), Gravity.CENTER))
 
         val inner = FrameLayout(this).apply {
             background = ovalGradient(0xFF4CAF50.toInt(), 0xFF2E7D32.toInt())
@@ -594,12 +594,12 @@ private fun stopClock(jobSiteId: Int) {
         }
         haloButtonView = inner
         val innerCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-        val glyph = TextView(this).apply { textSize = 50f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
-        val label = TextView(this).apply { textSize = 20f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
+        val glyph = TextView(this).apply { textSize = 40f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
+        val label = TextView(this).apply { textSize = 18f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
         glyphView = glyph; labelView = label
         innerCol.addView(glyph); innerCol.addView(label)
         inner.addView(innerCol, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER))
-        wrap.addView(inner, FrameLayout.LayoutParams(dp(200), dp(200), Gravity.CENTER))
+        wrap.addView(inner, FrameLayout.LayoutParams(dp(158), dp(158), Gravity.CENTER))
         column.addView(wrap)
 
         // elapsed (while running)
@@ -614,7 +614,7 @@ private fun stopClock(jobSiteId: Int) {
         // stop button (while running)
         if (clockRunning) {
             val stopBtn = TextView(this).apply {
-                text = "■ Stop"; textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                text = "Stop"; textSize = 18f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
                 setTypeface(null, Typeface.BOLD)
                 background = rounded(0xFFFF4038.toInt(), 4)
                 setOnClickListener {
@@ -622,12 +622,12 @@ private fun stopClock(jobSiteId: Int) {
                     showStopPicker()
                 }
             }
-            column.addView(stopBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+            column.addView(stopBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         }
 
         // Add Task button, always visible under the clock/stop controls
         column.addView(drawerButton("＋ Add Task") { showAddSession() },
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(20) })
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
 
         updateClockViews()
 
@@ -691,11 +691,13 @@ private fun stopClock(jobSiteId: Int) {
         val site = jobSites.find { it.id == session.jobSiteId }
         val projectColor = parseHex(site?.color ?: "#00796B")
         val expanded = expandedTaskId == session.id
+        val wageVal = site?.hourlyWage?.trim()?.toDoubleOrNull()
+        val earned = if (wageVal != null) wageVal * workedMinutes(session) / 60.0 else null
+
         val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), if (expanded) dp(10) else dp(6))
+            orientation = LinearLayout.HORIZONTAL
             background = card()
-            setMargins(0, dp(8), 0, 0)
+            setPadding(0, 0, dp(4), 0)
             // Tap: expand/collapse start/stop times.
             setOnClickListener {
                 expandedTaskId = if (expandedTaskId == session.id) null else session.id
@@ -722,50 +724,67 @@ private fun stopClock(jobSiteId: Int) {
                 true
             }
         }
+        // Left color rail in the project's own color, spans the full card height.
+        card.addView(View(this).apply { background = rounded(projectColor, 4) },
+            LinearLayout.LayoutParams(dp(5), ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // row 1: date/project + total time + earnings
-        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        info.addView(TextView(this).apply { text = isoDateDisplay(session.date); textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
-        info.addView(TextView(this).apply { text = site?.name ?: "Unknown project"; textSize = 12f; setTextColor(onSurfaceVariantColor) })
-        row1.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row1.addView(pill(formatMinutesShort(workedMinutes(session)), tint(projectColor), onSurfaceColor))
-        // earnings for this task = wage * worked hours (if the project has a wage)
-        val wageVal = site?.hourlyWage?.trim()?.toDoubleOrNull()
-        if (wageVal != null) {
-            val earned = wageVal * workedMinutes(session) / 60.0
-            row1.addView(pill("\$${String.format(Locale.US, "%.2f", earned)}", primaryContainerColor, onPrimaryContainerColor).also {
-                (it.layoutParams as? LinearLayout.LayoutParams)?.setMargins(dp(6), 0, 0, 0)
-            })
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(8), dp(12))
         }
-        card.addView(row1)
+        // line 1: date + big bold hours
+        body.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        }.also { line ->
+            line.addView(TextView(this).apply {
+                text = isoDateDisplay(session.date); textSize = 14f
+                setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            line.addView(TextView(this).apply {
+                text = formatMinutesShort(workedMinutes(session)); textSize = 16f
+                setTypeface(null, Typeface.BOLD); setTextColor(primaryColor)
+            })
+        })
+        // line 2: project name + subtle earnings footer
+        body.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(2), 0, 0)
+        }.also { line ->
+            line.addView(TextView(this).apply {
+                text = site?.name ?: "Unknown project"; textSize = 12f; setTextColor(onSurfaceVariantColor)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (earned != null) line.addView(TextView(this).apply {
+                text = "$${String.format(Locale.US, "%.2f", earned)}"
+                textSize = 12f; setTextColor(onSurfaceVariantColor)
+            })
+        })
 
-        // When expanded: show the start/stop times (and break) on separate lines.
+        // When expanded: show start/stop times (and break) on separate lines.
         if (expanded) {
             fun detailRow(label: String, value: String): View {
-                val row = LinearLayout(this).apply {
+                val row = LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                    setPadding(0, dp(6), 0, 0)
+                    setPadding(0, dp(8), 0, 0)
                 }
-                row.addView(TextView(this).apply { text = label; textSize = 12f; setTextColor(onSurfaceVariantColor) },
-                    LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT))
-                row.addView(TextView(this).apply { text = value; textSize = 14f; setTextColor(onSurfaceColor) })
+                row.addView(TextView(this@MainActivity).apply {
+                    text = label; textSize = 12f; setTextColor(onSurfaceVariantColor)
+                }, LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT))
+                row.addView(TextView(this@MainActivity).apply {
+                    text = value; textSize = 13f; setTextColor(onSurfaceColor)
+                })
                 return row
             }
-            card.addView(detailRow("Start", time12(session.startTime)))
-            card.addView(detailRow("Stop", time12(session.endTime)))
-            if (session.breakMinutes > 0) card.addView(detailRow("Break", "${session.breakMinutes} min"))
+            body.addView(detailRow("Start", time12(session.startTime)))
+            body.addView(detailRow("Stop", time12(session.endTime)))
+            if (session.breakMinutes > 0) body.addView(detailRow("Break", "${session.breakMinutes} min"))
+        }
+
+        card.addView(body, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        // Top margin between cards (set explicitly — flat-built view has no params yet).
+        card.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(8)
         }
         return card
-    }
-
-    // alpha-blend the project color over the card surface for the worked-hours badge
-    private fun tint(projectColor: Int): Int {
-        val a = 0x29
-        val r = (projectColor shr 16 and 0xFF) * a / 255
-        val g = (projectColor shr 8 and 0xFF) * a / 255
-        val b = (projectColor and 0xFF) * a / 255
-        return (a shl 24) or (r shl 16) or (g shl 8) or b
     }
 
     private fun Int.orColor(fallback: Int): Int {
@@ -809,50 +828,56 @@ private fun stopClock(jobSiteId: Int) {
         return col
     }
 
-    // Summary card for a date range: combined hours + pay across all jobs, with
-    // job-agnostic overtime. Details are always shown (no collapse).
-    private fun buildSummaryCard(title: String, from: String, to: String, onOpen: (() -> Unit)? = null): View {
-        val s = rangeSummary(from, to)
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(6), dp(14), dp(14))
-            background = rounded(summaryCardColor, 12)
-        }
-        val hasOt = s.otMin > 0
-        val totalPay = s.basePay + s.otPay
-        // Header: title + the range it covers. Tapping opens the full-screen list.
-        col.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setMinimumHeight(dp(40))
-            if (onOpen != null) { isClickable = true; setOnClickListener { onOpen() } }
-        }.also { head ->
-            val lbl = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            lbl.addView(TextView(this).apply {
-                text = title; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSummaryCardColor)
-            })
-            lbl.addView(TextView(this).apply {
-                text = "${isoDateDisplay(from)} – ${isoDateDisplay(to)}"; textSize = 11f; setTextColor(onSummaryCardColor)
-            })
-            head.addView(lbl, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        })
+    // Summary card for a date range: combined hours + pay across all jobs. A
+        // left accent rail + one big hero hours figure keeps the home screen light;
+        // pay sits underneath. Tapping opens the full-screen task list for the range.
+        private fun buildSummaryCard(title: String, from: String, to: String, onOpen: (() -> Unit)? = null): View {
+            val s = rangeSummary(from, to)
+            val totalPay = s.basePay + s.otPay
 
-        // Detail rows.
-        fun row(label: String, value: String) {
-            col.addView(LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(6), 0, 0)
-            }.also { r ->
-                r.addView(TextView(this).apply { text = label; textSize = 13f; setTextColor(onSummaryCardColor) },
-                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                r.addView(TextView(this).apply { text = value; textSize = 13f; setTypeface(null, Typeface.BOLD); setTextColor(onSummaryCardColor) })
+            val card: LinearLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = rounded(summaryCardColor, 16)
+                setPadding(0, 0, dp(4), 0)
+                setMinimumHeight(dp(62))
+                isClickable = onOpen != null
+                if (onOpen != null) setOnClickListener { onOpen() }
+            }
+            // Left accent rail, spans the full card height in the project's M3 primary.
+            card.addView(View(this).apply { background = rounded(primaryColor, 4) },
+                LinearLayout.LayoutParams(dp(5), ViewGroup.LayoutParams.MATCH_PARENT))
+
+            // title + range
+            val lbl = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), 0, dp(8), 0)
+            }
+            lbl.addView(TextView(this).apply {
+                text = title; textSize = 15f; setTypeface(null, Typeface.BOLD); setTextColor(onSummaryCardColor)
             })
+            lbl.addView(TextView(this).apply {
+                text = "${isoDateDisplay(from)} – ${isoDateDisplay(to)}"
+                textSize = 11f; setTextColor(onSummaryCardColor)
+            })
+            card.addView(lbl, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+            // hero hours + pay
+            val valCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.END
+            }
+            valCol.addView(TextView(this).apply {
+                text = formatMinutesShort(s.totalMin); textSize = 20f
+                setTypeface(null, Typeface.BOLD); setTextColor(onSummaryCardColor); gravity = Gravity.END
+            })
+            valCol.addView(TextView(this).apply {
+                text = "$${String.format(Locale.US, "%.2f", totalPay)}"
+                textSize = 12f; setTextColor(onSummaryCardColor); gravity = Gravity.END
+            })
+            card.addView(valCol, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            return card
         }
-        row("Hours", formatMinutesShort(s.totalMin))
-        if (hasOt) row("Overtime", "${formatMinutesShort(s.otMin)} @${formatWage(overtimeRateVal)}x")
-        row(if (hasOt) "Overtime pay" else "Total pay", "\$${String.format(Locale.US, "%.2f", if (hasOt) s.otPay else totalPay)}")
-        if (hasOt) row("Total pay", "\$${String.format(Locale.US, "%.2f", totalPay)}")
-        return col
-    }
 
     // Home-screen card: this week (Sunday–Saturday).
     private fun buildWeeklySummaryCard(): View {
@@ -1041,27 +1066,43 @@ private fun stopClock(jobSiteId: Int) {
         frame.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // ---- hamburger menu: one card per item (Projects / Tasks / Settings / Export) ----
-        // Selecting an item closes the drawer and opens that section full screen.
-        fun menuCard(name: String, onClick: () -> Unit) {
-            col.addView(TextView(this).apply {
-                text = name; textSize = 20f; setTypeface(null, Typeface.BOLD)
-                setTextColor(onSurfaceColor)
+        // Each item mirrors the home cards: a left accent rail, a bold title and a
+        // quiet subtitle. Selecting one closes the drawer and opens that section.
+        fun menuCard(name: String, sub: String, onClick: () -> Unit) {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, dp(4), 0)
                 background = card()
-                setPadding(dp(18), dp(18), dp(18), dp(18))
+                setMinimumHeight(dp(64))
                 isClickable = true
                 setOnClickListener { onClick() }
-            }, LinearLayout.LayoutParams(
+            }
+            item.addView(View(this).apply { background = rounded(primaryColor, 4) },
+                LinearLayout.LayoutParams(dp(5), ViewGroup.LayoutParams.MATCH_PARENT))
+            val txt = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(12), dp(8), dp(12))
+            }
+            txt.addView(TextView(this).apply {
+                text = name; textSize = 20f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor)
+            })
+            txt.addView(TextView(this).apply {
+                text = sub; textSize = 12f; setTextColor(onSurfaceVariantColor)
+            })
+            item.addView(txt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            col.addView(item, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 // Explicit LayoutParams: setMargins() no-ops on a view that hasn't been
                 // attached with layout params yet.
                 bottomMargin = dp(12)
             })
         }
-        menuCard("Projects") { drawerTab = 0; navScreen = 1; filteredSiteId = null; closeDrawer(); renderAll() }
-        menuCard("Tasks") { drawerTab = 1; navScreen = 2; filteredSiteId = null; closeDrawer(); renderAll() }
-        menuCard("Settings") { drawerTab = 2; navScreen = 3; filteredSiteId = null; closeDrawer(); renderAll() }
-        menuCard("Export") { closeDrawer(); showExportRange() }
+        menuCard("Projects", "Job sites & rates") { drawerTab = 0; navScreen = 1; filteredSiteId = null; closeDrawer(); renderAll() }
+        menuCard("Tasks", "Recorded sessions") { drawerTab = 1; navScreen = 2; filteredSiteId = null; closeDrawer(); renderAll() }
+        menuCard("Settings", "Overtime, pay period, theme") { drawerTab = 2; navScreen = 3; filteredSiteId = null; closeDrawer(); renderAll() }
+        menuCard("Export", "Download workbooks (.xlsx)") { closeDrawer(); showExportRange() }
 
         // Spacer pushes the credit line to the bottom of the (full-height) menu.
         col.addView(View(this).apply {}, LinearLayout.LayoutParams(1, 0).apply { weight = 1f })
