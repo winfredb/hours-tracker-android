@@ -176,11 +176,6 @@ class MainActivity : Activity() {
         if (isDark) 0xFFB2DFDB.toInt() else 0xFF00251A.toInt())
     private val errorColor get() = dyn(android.R.color.system_error_200, android.R.color.system_error_600,
         if (isDark) 0xFFF2B8B5.toInt() else 0xFFB3261E.toInt())
-    /** Filled tone for the main-page summary cards. Deliberately NOT wallpaper-derived:
-     *  the dynamic accent1_100 container can land close to the background tone and the
-     *  cards then stop reading as cards. */
-    private val summaryCardColor get() = if (isDark) 0xFF00504A.toInt() else 0xFFB2DFDB.toInt()
-    private val onSummaryCardColor get() = if (isDark) 0xFFB2DFDB.toInt() else 0xFF00251A.toInt()
     /** M3 surface-container tone — used for card fills and the dark status strip. */
     private val surfaceContainerColor get() = dyn(android.R.color.system_neutral1_800, android.R.color.system_neutral1_100,
         if (isDark) 0xFF1B1F1D.toInt() else 0xFFF1F4F0.toInt())
@@ -830,7 +825,9 @@ private fun stopClock(jobSiteId: Int) {
 
     // Summary card for a date range: combined hours + pay across all jobs. A
         // left accent rail + one big hero hours figure keeps the home screen light;
-        // pay sits underneath. Tapping opens the full-screen task list for the range.
+        // pay sits underneath. The card body is neutral (same surface as task cards)
+        // so the only colour is the accent rail — it can't clash with the start button,
+        // which shifts green → gold → orange as the clock runs.
         private fun buildSummaryCard(title: String, from: String, to: String, onOpen: (() -> Unit)? = null): View {
             val s = rangeSummary(from, to)
             val totalPay = s.basePay + s.otPay
@@ -838,7 +835,7 @@ private fun stopClock(jobSiteId: Int) {
             val card: LinearLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                background = rounded(summaryCardColor, 16)
+                background = card()
                 setPadding(0, 0, dp(4), 0)
                 setMinimumHeight(dp(62))
                 isClickable = onOpen != null
@@ -855,11 +852,11 @@ private fun stopClock(jobSiteId: Int) {
                 setPadding(dp(14), 0, dp(8), 0)
             }
             lbl.addView(TextView(this).apply {
-                text = title; textSize = 15f; setTypeface(null, Typeface.BOLD); setTextColor(onSummaryCardColor)
+                text = title; textSize = 15f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor)
             })
             lbl.addView(TextView(this).apply {
                 text = "${isoDateDisplay(from)} – ${isoDateDisplay(to)}"
-                textSize = 11f; setTextColor(onSummaryCardColor)
+                textSize = 11f; setTextColor(onSurfaceVariantColor)
             })
             card.addView(lbl, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
@@ -869,11 +866,11 @@ private fun stopClock(jobSiteId: Int) {
             }
             valCol.addView(TextView(this).apply {
                 text = formatMinutesShort(s.totalMin); textSize = 20f
-                setTypeface(null, Typeface.BOLD); setTextColor(onSummaryCardColor); gravity = Gravity.END
+                setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor); gravity = Gravity.END
             })
             valCol.addView(TextView(this).apply {
                 text = "$${String.format(Locale.US, "%.2f", totalPay)}"
-                textSize = 12f; setTextColor(onSummaryCardColor); gravity = Gravity.END
+                textSize = 12f; setTextColor(onSurfaceVariantColor); gravity = Gravity.END
             })
             card.addView(valCol, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             return card
