@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
  * Native SQLite store for HoursTracker. Mirrors the Room schema exactly so
  * exported data is identical to the Compose version.
  */
-class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", null, 3) {
+class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", null, 4) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -16,6 +16,7 @@ class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", 
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
                 "name TEXT NOT NULL, " +
                 "location TEXT, " +
+                "employer TEXT, " +
                 "hourly_wage REAL, " +
                 "overtime_start REAL, " +
                 "overtime_rate REAL, " +
@@ -40,6 +41,9 @@ class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", 
         if (oldVersion < 3) {
             try { db.execSQL("ALTER TABLE job_sites ADD COLUMN overtime_start REAL") } catch (e: Exception) {}
             try { db.execSQL("ALTER TABLE job_sites ADD COLUMN overtime_rate REAL") } catch (e: Exception) {}
+        }
+        if (oldVersion < 4) {
+            try { db.execSQL("ALTER TABLE job_sites ADD COLUMN employer TEXT") } catch (e: Exception) {}
         }
     }
 }

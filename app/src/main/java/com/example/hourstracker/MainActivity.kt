@@ -101,6 +101,13 @@ class MainActivity : Activity() {
         startTicker()
         // Re-surface the running/paused notification after process death.
         syncTimerNotification()
+        // The home-screen widget's Stop button opens the app with CMD_STOP: pause
+        // the running clock and show the usual "which job" picker to save the run.
+        if (getIntent()?.action == "com.example.hourstracker.CMD_STOP" && clockRunning) {
+            clockPaused = true
+            persistClock()
+            mainHandler.post { try { showStopPicker() } catch (t: Throwable) { } }
+        }
     }
 
     private val notificationPermissionCode = 901
@@ -263,6 +270,9 @@ class MainActivity : Activity() {
                     id = c.getInt(c.getColumnIndexOrThrow("id")),
                     name = c.getString(c.getColumnIndexOrThrow("name")),
                     location = loc,
+                    employer = c.getColumnIndex("employer").let { idx ->
+                        if (idx >= 0 && !c.isNull(idx)) c.getString(idx) else null
+                    },
                     hourlyWage = wage,
                     color = c.getString(c.getColumnIndexOrThrow("color"))
                 ))
@@ -289,20 +299,22 @@ class MainActivity : Activity() {
         return out
     }
 
-    private fun addSite(name: String, location: String = "", wage: String? = null) {
+    private fun addSite(name: String, location: String = "", employer: String = "", wage: String? = null) {
         val cv = android.content.ContentValues()
         cv.put("name", name)
         cv.put("location", if (location.isBlank()) null else location)
+        cv.put("employer", if (employer.isBlank()) null else employer)
         cv.put("hourly_wage", parseWage(wage))
         cv.put("color", "#00796B")
         db.writableDatabase.insert("job_sites", null, cv)
         refreshData(); renderAll()
     }
 
-    private fun renameSite(id: Int, name: String, location: String, wage: String? = null) {
+    private fun renameSite(id: Int, name: String, location: String, employer: String = "", wage: String? = null) {
         android.content.ContentValues().apply {
             put("name", name)
             put("location", if (location.isBlank()) null else location)
+            put("employer", if (employer.isBlank()) null else employer)
             put("hourly_wage", parseWage(wage))
             db.writableDatabase.update("job_sites", this, "id=?", arrayOf(id.toString()))
         }
@@ -540,7 +552,14 @@ private fun stopTimerNotification() {
 
     // ==================== LAYOUT ====================
 
-    private fun renderAll() { buildLayout() }
+    private fun renderAll() {
+        buildLayout()
+        // Keep the home-screen widget (and the timer notification) in sync with
+        // whatever just changed. updateAll is cheap (only touches existing widgets).
+        if (Build.VERSION.SDK_INT >= 26) {
+            try { Widget3x1Provider.updateAll(this) } catch (e: Exception) { }
+        }
+    }
 
     private fun buildLayout() {
         val topPad = statusBarTop + dp(18)
@@ -1276,6 +1295,7 @@ private fun stopTimerNotification() {
                 val ci = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 ci.addView(TextView(this).apply { text = site.name; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
                 val subParts = mutableListOf<String>()
+                if (!site.employer.isNullOrBlank()) subParts.add(site.employer)
                 if (!site.location.isNullOrBlank()) subParts.add(site.location)
                 if (!site.hourlyWage.isNullOrBlank()) subParts.add("\$${site.hourlyWage}/hr")
                 if (subParts.isNotEmpty()) ci.addView(TextView(this).apply { text = subParts.joinToString(" · "); textSize = 12f; setTextColor(onSurfaceVariantColor) })
@@ -1349,6 +1369,11 @@ private fun stopTimerNotification() {
             setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
             inputType = InputType.TYPE_CLASS_TEXT
         }
+        val employer = EditText(this).apply {
+            hint = "Employer / client"; textSize = 18f
+            setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
         val wage = EditText(this).apply {
             hint = "Hourly wage ($)"; textSize = 18f
             setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
@@ -1358,15 +1383,19 @@ private fun stopTimerNotification() {
             orientation = LinearLayout.VERTICAL; setPadding(dp(28), dp(16), dp(28), dp(8))
         }
         name.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        employer.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        employer.setMargins(0, dp(10), 0, 0)
         wage.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
         wage.setMargins(0, dp(10), 0, 0)
         wrap.addView(name)
+        wrap.addView(employer)
         wrap.addView(wage)
         AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Add Project")
             .setView(wrap)
             .setPositiveButton("Add") { _, _ ->
-                if (name.text.toString().isNotBlank()) addSite(name.text.toString().trim(), "", wage.text.toString().trim())
+                if (name.text.toString().isNotBlank())
+                    addSite(name.text.toString().trim(), "", employer.text.toString().trim(), wage.text.toString().trim())
                 else statusMessage = "Project name can't be empty"
             }
             .setNegativeButton("Cancel", null)
@@ -1378,15 +1407,18 @@ private fun stopTimerNotification() {
     private fun showEditProject(site: JobSite) {
         val name = EditText(this).apply { setText(site.name); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_TEXT }
         val loc = EditText(this).apply { setText(site.location ?: ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_TEXT }
+        val employer = EditText(this).apply { setText(site.employer ?: ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_TEXT }
         val wage = EditText(this).apply { setText(site.hourlyWage ?: ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL }
         val nameLbl = TextView(this).apply { text = "Name"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
         val locLbl = TextView(this).apply { text = "Location"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
+        val employerLbl = TextView(this).apply { text = "Employer / client"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
         val wageLbl = TextView(this).apply { text = "Hourly wage ($)"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
         AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Edit Project")
-            .setView(fieldColumn(nameLbl, name, locLbl, loc, wageLbl, wage))
+            .setView(fieldColumn(nameLbl, name, locLbl, loc, employerLbl, employer, wageLbl, wage))
             .setPositiveButton("Save") { _, _ ->
-                if (name.text.toString().isNotBlank()) renameSite(site.id, name.text.toString().trim(), loc.text.toString(), wage.text.toString().trim())
+                if (name.text.toString().isNotBlank())
+                    renameSite(site.id, name.text.toString().trim(), loc.text.toString(), employer.text.toString().trim(), wage.text.toString().trim())
                 else statusMessage = "Project name can't be empty"
             }
             .setNegativeButton("Cancel", null)
@@ -1426,6 +1458,7 @@ private fun stopTimerNotification() {
                     text = site.name; textSize = 17f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor)
                 })
                 val sub = mutableListOf<String>()
+                if (!site.employer.isNullOrBlank()) sub.add(site.employer)
                 if (!site.location.isNullOrBlank()) sub.add(site.location)
                 if (!site.hourlyWage.isNullOrBlank()) sub.add("\$${site.hourlyWage}/hr")
                 info.addView(TextView(this).apply {
