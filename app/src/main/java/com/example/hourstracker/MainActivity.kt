@@ -90,12 +90,31 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences("hours_tracker", Context.MODE_PRIVATE)
         themeMode = prefs.getString("theme", "system") ?: "system"
         isDark = resolveDark()
+        // Notifications are hidden on Android 13+ unless the user grants
+        // POST_NOTIFICATIONS — request it up front so the timer status can show.
+        requestNotificationPermission()
         // Restore the running clock from persisted wall-clock state so the timer
         // keeps accruing even across process death / relaunch.
         restoreClockState()
         refreshData()
         buildLayout()
         startTicker()
+        // Re-surface the running/paused notification after process death.
+        syncTimerNotification()
+    }
+
+    private val notificationPermissionCode = 901
+    // Android 13+ (API 33, targetSdk 36): POST_NOTIFICATIONS is required before
+    // any notification shows. Ask for it on launch; the timer status notification
+    // simply stays hidden if the user declines (the app still works).
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        requestPermissions(
+            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+            notificationPermissionCode
+        )
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -485,6 +504,7 @@ private fun onHaloTap() {
         }
     }
     persistClock()
+    syncTimerNotification()
     renderAll()
 }
 
@@ -496,7 +516,26 @@ private fun stopClock(jobSiteId: Int) {
     insertSession(WorkSession(id = 0, jobSiteId = jobSiteId, date = today, startTime = start, endTime = end, breakMinutes = 0, notes = "clock"))
     startedAt = ""; segmentStartMs = 0L; accumulatedMs = 0L
     persistClock()
+    stopTimerNotification()
     renderAll()
+}
+
+// ============ Timer status notification (foreground service) ============
+// Keeps an ongoing notification in the shade (running / paused + live elapsed)
+// so the user can see the clock state without opening the app. The service
+// reads the same persisted state, so it also survives process death.
+private fun syncTimerNotification() {
+    if (!clockRunning) { stopTimerNotification(); return }
+    val i = Intent(this, TimerService::class.java).setAction("sync")
+    try {
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+    } catch (e: Exception) {
+        // runtime may not support FGS (e.g. Mirror runtime) — degrade silently
+    }
+}
+
+private fun stopTimerNotification() {
+    try { stopService(Intent(this, TimerService::class.java)) } catch (e: Exception) { }
 }
 
     // ==================== LAYOUT ====================
