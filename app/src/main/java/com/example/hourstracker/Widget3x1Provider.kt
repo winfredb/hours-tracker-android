@@ -14,25 +14,37 @@ import java.util.Locale
 
 /**
  * 3x1 home-screen widget that shows today's worked hours AND controls the timer:
- *   - timerBtn  toggles Start / Pause / Resume (writes the same persisted wall-clock
- *               state the app uses, so it works without the app being open).
- *   - stopBtn   hands off to the app's save flow (job picker) so the session is kept.
- *   - hoursValue shows today's elapsed hours (live once a minute + on each action).
+ *   - timerBtn  toggles Start / Pause / Resume entirely in-widget via an explicit
+ *               broadcast back to this provider (onReceive -> toggleTimer).
+ *   - stopBtn   books the session to the active job in-widget (no app launch).
+ *   - jobName   is the top row: the active job, full width and set large.
+ *   - hoursText is the bottom-left: today's hours worked.
  *
- * Layout stays FLAT (this host rejects nested/weighted columns). Text/button colors
- * and the solid background are applied via RemoteViews actions at runtime.
+ * Both PendingIntents MUST be getBroadcast (this is a BroadcastReceiver, not an
+ * Activity) and MUST carry FLAG_IMMUTABLE — on targetSdk 31+ creating a
+ * PendingIntent without a mutability flag throws IllegalArgumentException, which
+ * silently killed the buttons before (the throw was swallowed by the try/catch
+ * in onUpdate, leaving a RemoteViews with no click handlers at all).
+ *
+ * Layout IS NESTED (v3.28, user-confirmed on device): a vertical root holding the
+ * full-width job name on top and an inner horizontal row with hours + the two
+ * buttons. An earlier note here claimed "this host rejects nested/weighted
+ * containers — they render translucent and break clicks". That was WRONG: it was
+ * a misdiagnosis of the PendingIntent mutability bug above, made in the same
+ * session the buttons were dead. Do not flatten the layout on that account.
+ * Root background is the solid dark panel declared in the layout XML.
  */
 class Widget3x1Provider : AppWidgetProvider() {
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        val views = try { build(context) } catch (t: Throwable) { RemoteViews(context.packageName, R.layout.widget_3x1) }
         for (id in ids) {
+            val views = try { build(context, id) } catch (t: Throwable) { RemoteViews(context.packageName, R.layout.widget_3x1) }
             try { manager.updateAppWidget(id, views) } catch (t: Throwable) { }
         }
     }
 
     override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, id: Int, newOptions: android.os.Bundle) {
-        val views = try { build(context) } catch (t: Throwable) { RemoteViews(context.packageName, R.layout.widget_3x1) }
+        val views = try { build(context, id) } catch (t: Throwable) { RemoteViews(context.packageName, R.layout.widget_3x1) }
         try { manager.updateAppWidget(id, views) } catch (t: Throwable) { }
     }
 
@@ -51,6 +63,8 @@ class Widget3x1Provider : AppWidgetProvider() {
         const val ACTION_TOGGLE = "com.example.hourstracker.widget.TOGGLE"
         const val ACTION_STOP = "com.example.hourstracker.widget.STOP"
         const val CMD_STOP_APP = "com.example.hourstracker.CMD_STOP"
+        const val CMD_START_APP = "com.example.hourstracker.CMD_START"
+        const val CMD_TOGGLE_APP = "com.example.hourstracker.CMD_TOGGLE"
 
         private fun prefs(context: Context): SharedPreferences =
             context.getSharedPreferences("hours_tracker", Context.MODE_PRIVATE)
@@ -89,7 +103,13 @@ class Widget3x1Provider : AppWidgetProvider() {
             val paused = p.getBoolean("clockPaused", false)
             val e = p.edit()
             if (!running) {
-                // Start
+                // Start. Only allowed if an active (working-on) job is set; the
+                // widget can't show a picker, so hand off to the app to choose.
+                if (p.getInt("activeJobId", -1) < 1) {
+                    e.apply()
+                    startFromApp(context)
+                    return
+                }
                 e.putString("startedAt", LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
                 e.putBoolean("clockRunning", true)
                 e.putBoolean("clockPaused", false)
@@ -106,24 +126,77 @@ class Widget3x1Provider : AppWidgetProvider() {
                 e.putBoolean("clockPaused", true)
             }
             e.apply()
+            // Keep the status notification in step with the widget's own action
+            // (running/paused -> show, stopped -> hide) without opening the app.
+            syncTimerService(context)
         }
 
-        private fun stopFromWidget(context: Context) {
-            // Hand off to the app so the session is saved through the normal job
-            // picker, rather than silently dropping the run's data.
+        private fun syncTimerService(context: Context) {
+            val p = prefs(context)
+            try {
+                if (p.getBoolean("clockRunning", false)) {
+                    val i = Intent(context, TimerService::class.java).setAction("sync")
+                    if (android.os.Build.VERSION.SDK_INT >= 26) context.startForegroundService(i)
+                    else context.startService(i)
+                } else {
+                    context.stopService(Intent(context, TimerService::class.java))
+                }
+            } catch (t: Throwable) { }
+        }
+
+        private fun startFromApp(context: Context) {
             val intent = Intent(context, MainActivity::class.java)
-                .setAction(CMD_STOP_APP)
+                .setAction(CMD_START_APP)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             try { context.startActivity(intent) } catch (t: Throwable) { }
         }
 
+        private fun stopFromWidget(context: Context) {
+            // Book the session directly to the active job (no app launch).
+            val p = prefs(context)
+            if (!p.getBoolean("clockRunning", false)) return
+            val jobId = p.getInt("activeJobId", -1)
+            if (jobId < 1) return
+            val start = p.getString("startedAt", "") ?: ""
+            val end = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
+            val date = LocalDate.now().toString()
+            try {
+                val db = HoursDb(context)
+                val cv = android.content.ContentValues()
+                cv.put("job_site_id", jobId)
+                cv.put("date", date)
+                cv.put("start_time", start)
+                cv.put("end_time", end)
+                cv.put("break_minutes", 0)
+                cv.put("notes", "clock")
+                db.writableDatabase.insert("work_sessions", null, cv)
+                db.close()
+            } catch (t: Throwable) { }
+            // Reset the clock state.
+            p.edit()
+                .putBoolean("clockRunning", false)
+                .putBoolean("clockPaused", false)
+                .putString("startedAt", "")
+                .putLong("segmentStartMs", 0L)
+                .putLong("accumulatedMs", 0L)
+                .apply()
+            syncTimerService(context)
+        }
+
         /** Hours today + live running elapsed. Throws? handled by caller. */
-        private fun build(context: Context): RemoteViews {
+        private fun build(context: Context, appWidgetId: Int): RemoteViews {
             val today = LocalDate.now().toString()
             val p = prefs(context)
 
             var minutesToday = 0
+            var activeName = ""
             val db = HoursDb(context)
+            val activeId = p.getInt("activeJobId", -1)
+            if (activeId >= 1) {
+                db.readableDatabase.rawQuery("SELECT name FROM job_sites WHERE id=?", arrayOf(activeId.toString())).use { c ->
+                    if (c.moveToNext()) activeName = c.getString(c.getColumnIndexOrThrow("name")) ?: ""
+                }
+            }
             db.readableDatabase.rawQuery(
                 "SELECT start_time, end_time, break_minutes FROM work_sessions WHERE date=?",
                 arrayOf(today)
@@ -143,8 +216,32 @@ class Widget3x1Provider : AppWidgetProvider() {
             val paused = p.getBoolean("clockPaused", false)
 
             val dark = resolveDark(context)
+            // Root panel is the solid dark shape declared in the layout XML.
+            // Do NOT override it at runtime: setBackgroundColor would replace the
+            // drawable outright (losing the rounded corners) and would also
+            // re-introduce the transparent-widget look the panel is meant to fix.
+            // Because the panel is always dark, text is always the light on-dark tone.
+            val onSurface = 0xFFE1E3DE.toInt()
+            val btnFg = if (dark) 0xFF00251A.toInt() else 0xFFFFFFFF.toInt()
+            val toggleFill = when {
+                !running -> 0xFF00695C.toInt()            // teal: Start
+                paused -> 0xFFFF6D00.toInt()               // orange: Resume
+                else -> 0xFFFFC107.toInt()                 // gold: Pause
+            }
+
             val views = RemoteViews(context.packageName, R.layout.widget_3x1)
-            views.setTextViewText(R.id.hoursValue, formatMinutesShort(minutesToday))
+
+            // v3.28: nested layout, user-confirmed working. Name spans the top line;
+            // the inner row holds hours + the two buttons. Nesting is fine here —
+            // see the layout comment (the old "host rejects nesting" theory was a
+            // misdiagnosis of the PendingIntent mutability bug).
+            val nameLine = activeName.ifBlank { "No job" }
+            views.setTextViewText(R.id.jobName, nameLine)
+            views.setTextColor(R.id.jobName, onSurface)
+
+            // Today's hours — bottom-left line of the inner row.
+            views.setTextViewText(R.id.hoursText, formatMinutesShort(minutesToday))
+            views.setTextColor(R.id.hoursText, onSurface)
 
             val toggleLabel = when {
                 !running -> "▶"     // start (idle)
@@ -153,39 +250,30 @@ class Widget3x1Provider : AppWidgetProvider() {
             }
             views.setTextViewText(R.id.timerBtn, toggleLabel)
 
-            views.setInt(R.id.widgetRoot, "setBackgroundColor", if (dark) 0xFF1B1F1D.toInt() else 0xFFF1F4F0.toInt())
-            val onSurface = if (dark) 0xFFE1E3DE.toInt() else 0xFF191C1A.toInt()
-            val btnFg = if (dark) 0xFF00251A.toInt() else 0xFFFFFFFF.toInt()
-            val toggleFill = when {
-                !running -> 0xFF00695C.toInt()            // teal: Start
-                paused -> 0xFFFF6D00.toInt()               // orange: Resume
-                else -> 0xFFFFC107.toInt()                 // gold: Pause
-            }
-            views.setTextColor(R.id.hoursValue, onSurface)
             views.setInt(R.id.timerBtn, "setBackgroundColor", toggleFill)
             views.setTextColor(R.id.timerBtn, btnFg)
             views.setInt(R.id.stopBtn, "setBackgroundColor", 0xFFFF4038.toInt())
             views.setTextColor(R.id.stopBtn, 0xFFFFFFFF.toInt())
 
-            views.setOnClickPendingIntent(R.id.timerBtn, PendingIntent.getBroadcast(
-                context, 0,
+            val togglePi = PendingIntent.getBroadcast(
+                context, appWidgetId,
                 Intent(context, Widget3x1Provider::class.java).setAction(ACTION_TOGGLE),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
-            views.setOnClickPendingIntent(R.id.stopBtn, PendingIntent.getActivity(
-                context, 1,
-                Intent(context, MainActivity::class.java)
-                    .setAction(CMD_STOP_APP)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val stopPi = PendingIntent.getBroadcast(
+                context, appWidgetId + 1000,
+                Intent(context, Widget3x1Provider::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            views.setOnClickPendingIntent(R.id.timerBtn, togglePi)
+            views.setOnClickPendingIntent(R.id.stopBtn, stopPi)
             return views
         }
 
         /** Refresh all placed instances (called from MainActivity + after actions). */
         fun updateAll(context: Context) {
-            val views = try { build(context) } catch (t: Throwable) { RemoteViews(context.packageName, R.layout.widget_3x1) }
             val mgr = AppWidgetManager.getInstance(context)
             val ids = mgr.getAppWidgetIds(android.content.ComponentName(context, Widget3x1Provider::class.java))
             for (id in ids) {
+                val views = try { build(context, id) } catch (t: Throwable) { RemoteViews(context.packageName, R.layout.widget_3x1) }
                 try { mgr.updateAppWidget(id, views) } catch (t: Throwable) { }
             }
         }

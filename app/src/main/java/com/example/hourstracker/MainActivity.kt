@@ -55,11 +55,20 @@ class MainActivity : Activity() {
     private var clockRunning = false
     private var clockPaused = false
     private var startedAt = ""
+    // The job the user is currently working on. Persisted; stays until the user
+    // changes it. Stopping the timer books the session to this job directly.
+    private var activeJobId = -1
     // Persisted wall-clock state so the clock keeps accruing even if the
     // process is killed. segmentStartMs = epoch of the current running segment
     // (0 when paused/stopped); accumulatedMs = time banked from earlier segments.
     private var segmentStartMs = 0L
     private var accumulatedMs = 0L
+
+    // Signature of the clock/job/session state the CURRENT layout was built from.
+    // The home-screen widget writes prefs directly (it never opens the app), so
+    // onResume() compares this to the freshly-restored state to decide whether a
+    // full re-render is needed or a plain tick will do.
+    private var builtStateSig = ""
     private var statusMessage = ""
     private var drawerTab = 0 // menu selection: 0 = Projects, 1 = Tasks, 2 = Settings
     private var navScreen = 0 // 0 = Home, 1 = Projects, 2 = Tasks, 3 = Settings, 4 = This week tasks, 5 = Pay period tasks
@@ -83,6 +92,7 @@ class MainActivity : Activity() {
     private var labelView: TextView? = null
     private var haloButtonView: View? = null
     private var haloGlowView: View? = null
+    private var activeJobView: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,12 +111,36 @@ class MainActivity : Activity() {
         startTicker()
         // Re-surface the running/paused notification after process death.
         syncTimerNotification()
-        // The home-screen widget's Stop button opens the app with CMD_STOP: pause
-        // the running clock and show the usual "which job" picker to save the run.
+        // The home-screen widget's Stop button opens the app with CMD_STOP: stop
+        // the running clock, booking the session to the active job (no picker).
         if (getIntent()?.action == "com.example.hourstracker.CMD_STOP" && clockRunning) {
-            clockPaused = true
-            persistClock()
-            mainHandler.post { try { showStopPicker() } catch (t: Throwable) { } }
+            if (activeSite() == null) {
+                clockPaused = true
+                persistClock()
+                showJobPicker("Which job are you working on?") { s -> stopClock(s.id) }
+            } else {
+                stopClock(activeJobId)
+            }
+        }
+        // The widget's Start button when no active job is set: open the app so the
+        // user can choose the job; then start the clock.
+        if (getIntent()?.action == "com.example.hourstracker.CMD_START" && !clockRunning) {
+            val site = activeSite()
+            if (site == null) {
+                showJobPicker("Which job are you working on?") { s ->
+                    activeJobId = s.id
+                    persistClock()
+                    startClockFromIdle()
+                }
+            } else {
+                startClockFromIdle()
+            }
+        }
+        // The widget's Start/Pause toggle: route through the app (the widget's
+        // own broadcast intent never delivered on this host). Same logic as the
+        // halo button — start/pause/resume the running clock.
+        if (getIntent()?.action == "com.example.hourstracker.CMD_TOGGLE") {
+            mainHandler.post { try { onHaloTap() } catch (t: Throwable) { } }
         }
     }
 
@@ -253,6 +287,28 @@ class MainActivity : Activity() {
     }
 
     // ==================== DATA ====================
+
+    override fun onResume() {
+        super.onResume()
+        // The home-screen widget writes timer state straight to SharedPreferences
+        // and never opens the app. Re-read it every time we return to the
+        // foreground so widget-driven Start/Pause/Stop shows up immediately
+        // instead of only after a cold start (clearing the app from recents).
+        val wasSig = builtStateSig
+        restoreClockState()
+        refreshData()
+        if (stateSig() != wasSig) {
+            renderAll()
+            if (drawerOpen) openDrawer()
+        } else {
+            updateClockViews()
+            syncTimerNotification()
+        }
+    }
+
+    // State that affects how the screen is built: clock run/pause, the active
+    // job, and how many sessions exist (a widget Stop adds one).
+    private fun stateSig(): String = "$clockRunning|$clockPaused|$activeJobId|${sessions.size}"
 
     private fun refreshData() {
         jobSites = querySites()
@@ -465,6 +521,7 @@ private fun persistClock() {
         .putString("startedAt", startedAt)
         .putLong("segmentStartMs", segmentStartMs)
         .putLong("accumulatedMs", accumulatedMs)
+        .putInt("activeJobId", activeJobId)
         .apply()
 }
 
@@ -474,6 +531,7 @@ private fun restoreClockState() {
     startedAt = prefs.getString("startedAt", "") ?: ""
     segmentStartMs = prefs.getLong("segmentStartMs", 0L)
     accumulatedMs = prefs.getLong("accumulatedMs", 0L)
+    activeJobId = prefs.getInt("activeJobId", -1)
 }
 
 private fun elapsedMs(): Long {
@@ -498,10 +556,17 @@ private fun stopTicker() { tickerRunning = false; mainHandler.removeCallbacksAnd
 private fun onHaloTap() {
     when {
         !clockRunning -> {
-            startedAt = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-            clockRunning = true; clockPaused = false
-            accumulatedMs = 0L
-            segmentStartMs = System.currentTimeMillis()
+            // Pick the active job first (stays until the user changes it), then start.
+            val site = activeSite()
+            if (site == null) {
+                showJobPicker("Which job are you working on?") { s ->
+                    activeJobId = s.id
+                    persistClock()
+                    startClockFromIdle()
+                }
+                return
+            }
+            startClockFromIdle()
         }
         clockPaused -> {
             // resume
@@ -517,6 +582,32 @@ private fun onHaloTap() {
     }
     persistClock()
     syncTimerNotification()
+    renderAll()
+}
+
+// Start the clock from idle, then persist/notify/render. Used both by the
+// direct halo tap and the picker callback (which returns early from onHaloTap).
+private fun startClockFromIdle() {
+    startedAt = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
+    clockRunning = true; clockPaused = false
+    accumulatedMs = 0L
+    segmentStartMs = System.currentTimeMillis()
+    persistClock()
+    syncTimerNotification()
+    renderAll()
+}
+
+// Stop the timer and book the session to the active job (no job picker).
+private fun stopToActiveJob() {
+    val site = activeSite()
+    if (site == null) { showJobPicker("Which job are you working on?") { s -> stopClock(s.id) }; return }
+    stopClock(site.id)
+}
+
+// Change the active job (the one you're working on); persists until changed.
+private fun setActiveJob(site: JobSite) {
+    activeJobId = site.id
+    persistClock()
     renderAll()
 }
 
@@ -625,6 +716,9 @@ private fun stopTimerNotification() {
 
         setContentView(root)
         if (drawerOpen) openDrawer()
+        // Remember what this layout was built from so onResume() can detect
+        // widget-driven changes and rebuild only when needed.
+        builtStateSig = stateSig()
     }
 
     // Home screen: clock halo + stop + add task + status.
@@ -638,6 +732,16 @@ private fun stopTimerNotification() {
         stateView = stateLbl
         val lpCenter = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         column.addView(stateLbl, lpCenter)
+
+        // Active job indicator: shows the job you're working on, tap to change it.
+        val jobLbl = TextView(this).apply {
+            textSize = 14f; gravity = Gravity.CENTER
+            setTextColor(onSurfaceVariantColor)
+            setTypeface(null, Typeface.BOLD)
+            setOnClickListener { showJobPicker("Which job are you working on?") { s -> setActiveJob(s) } }
+        }
+        activeJobView = jobLbl
+        column.addView(jobLbl, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
 
         val wrap = FrameLayout(this)
         wrap.layoutParams = LinearLayout.LayoutParams(dp(176), dp(176)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(18) }
@@ -679,7 +783,7 @@ private fun stopTimerNotification() {
                 background = rounded(0xFFFF4038.toInt(), 4)
                 setOnClickListener {
                     clockPaused = true
-                    showStopPicker()
+                    stopToActiveJob()
                 }
             }
             column.addView(stopBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply { gravity = Gravity.CENTER_HORIZONTAL })
@@ -729,6 +833,7 @@ private fun stopTimerNotification() {
             clockPaused -> "Paused since $startedAt"
             else -> "Working since $startedAt"
         }
+        activeJobView?.text = activeSite()?.name?.let { "Working on $it" } ?: "Select job"
         glyphView?.text = if (!clockRunning || clockPaused) "▶" else "⏸"
         labelView?.text = if (!clockRunning) "Start" else if (clockPaused) "Resume" else "Pause"
         elapsedView?.let { tv ->
@@ -1425,14 +1530,16 @@ private fun stopTimerNotification() {
             .show()
     }
 
-    // Stop-timer job picker: a roomy dialog with one card per project (name, rate,
-    // hours booked so far) instead of a cramped list of plain rows.
-    private fun showStopPicker() {
+    // Job picker: a roomy dialog with one card per project (name, rate, hours
+    // booked so far). Used to CHOOSE the active job (the one you're working on),
+    // both when starting the timer and when changing it. Not used at stop time —
+    // stopping books straight to the active job.
+    private fun showJobPicker(titleText: String, onPick: (JobSite) -> Unit) {
         if (jobSites.isEmpty()) {
             AlertDialog.Builder(this, pickerDialogThemeId())
-                .setTitle("Which job were you working on?")
+                .setTitle(titleText)
                 .setMessage("No projects yet. Add one first.")
-                .setNegativeButton("Close") { _, _ -> if (clockPaused) clockPaused = false; renderAll() }
+                .setNegativeButton("Close") { _, _ -> renderAll() }
                 .show()
             return
         }
@@ -1447,7 +1554,7 @@ private fun stopTimerNotification() {
                 background = card()
                 setPadding(dp(20), dp(20), dp(20), dp(20))
                 isClickable = true
-                setOnClickListener { dlg.dismiss(); stopClock(site.id) }
+                setOnClickListener { dlg.dismiss(); onPick(site) }
             }.also { row ->
                 val siteSessions = sessions.filter { it.jobSiteId == site.id }
                 val totalMin = siteSessions.sumOf { workedMinutes(it) }
@@ -1462,7 +1569,7 @@ private fun stopTimerNotification() {
                 if (!site.location.isNullOrBlank()) sub.add(site.location)
                 if (!site.hourlyWage.isNullOrBlank()) sub.add("\$${site.hourlyWage}/hr")
                 info.addView(TextView(this).apply {
-                    text = if (sub.isEmpty()) "Tap to book this session" else sub.joinToString(" · ")
+                    text = if (sub.isEmpty()) "Tap to select" else sub.joinToString(" · ")
                     textSize = 13f; setTextColor(onSurfaceVariantColor)
                 })
                 row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -1481,14 +1588,17 @@ private fun stopTimerNotification() {
         }
 
         dlg = AlertDialog.Builder(this, pickerDialogThemeId())
-            .setTitle("Which job were you working on?")
+            .setTitle(titleText)
             .setView(col)
-            .setNegativeButton("Cancel") { _, _ -> if (clockPaused) clockPaused = false; renderAll() }
+            .setNegativeButton("Cancel") { _, _ -> renderAll() }
             .create()
         dlg.show()
         // Roomy picker: wider than a default alert and tall enough for the cards.
         dlg.window?.setLayout(dp(360), ViewGroup.LayoutParams.WRAP_CONTENT)
     }
+
+    // The job the user is working on; null if none chosen yet.
+    private fun activeSite(): JobSite? = jobSites.find { it.id == activeJobId }
 
     private fun showAddSession() {
         val now = LocalDateTime.now()
