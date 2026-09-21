@@ -69,10 +69,9 @@ class Widget3x1Provider : AppWidgetProvider() {
         }
 
         private fun formatMinutesShort(total: Int): String {
-            // HH:MM (e.g. "02:05") — the widget shows elapsed time as clock-style
-            // hours:minutes, not "2h 5m".
+            // H:MM (e.g. "5:05") — no leading zero on the hour digit.
             val h = total / 60; val m = total % 60
-            return String.format(Locale.US, "%02d:%02d", h, m)
+            return String.format(Locale.US, "%d:%02d", h, m)
         }
 
         // ---- Timer state (mirrors MainActivity's persisted wall-clock keys) ----

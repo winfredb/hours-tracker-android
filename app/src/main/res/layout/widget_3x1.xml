@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Home-screen 3x1 widget with timer controls.
      Flat structure (single horizontal row) — nested/weighted column layouts are
-     rejected by this host, so everything lives at one level:
-       1) Hours value   (weight 1)
+     rejected by this host, so everything lives at one level. Time on the left:
+       1) Hours value   (weight 1, leftmost, centered)
        2) Start/Pause toggle button   (weight 1)
        3) Stop button   (weight 1)
      Text/colors set at runtime. Background painted via setBackgroundColor. -->
@@ -14,11 +14,10 @@
 
     <TextView android:id="@+id/hoursValue"
         android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
-        android:layout_marginStart="8dp"
-        android:gravity="center_vertical"
+        android:gravity="center"
         android:textSize="26sp"
         android:textStyle="bold"
-        android:text="00:00"/>
+        android:text="0:00"/>
 
     <Button android:id="@+id/timerBtn"
         android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
