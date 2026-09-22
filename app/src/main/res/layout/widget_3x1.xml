@@ -18,7 +18,13 @@
          infoColumn     : LinearLayout vertical, centreVertical, marginStart 28dp,
                           width match_parent, marginEnd 92dp  (text may never run
                           under the controls)
-             hoursText   : 30sp bold  -> the hero time, TOP line
+             hoursText   : 30sp bold  -> the hero time when NOT running (idle/paused)
+             hoursChrono : 30sp bold  -> the hero time while RUNNING. Same slot as
+                          hoursText, exactly one of the two is visible. A Chronometer
+                          is ticked by the host itself, so the hero time advances every
+                          second like the in-app clock without the app pushing an
+                          update per second (the host floors updatePeriodMillis at
+                          30 minutes, which is why hoursText alone looked frozen).
              jobName     : 12sp bold, marginTop 4dp
              employerText: 11sp, collapsed when the job has no employer
          controls       : LinearLayout vertical, alignParentEnd, centreVertical,
@@ -85,6 +91,19 @@
             android:textStyle="bold"
             android:textColor="#E1E3DE"
             android:text=""/>
+
+        <!-- Same slot as hoursText; exactly one is visible. Chronometer is a
+             TextView subclass and carries @RemoteView, so RemoteViews can
+             inflate it and drive setChronometer(). -->
+        <Chronometer android:id="@+id/hoursChrono"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:textSize="30sp"
+            android:textStyle="bold"
+            android:textColor="#E1E3DE"
+            android:visibility="gone"/>
 
         <TextView android:id="@+id/jobName"
             android:layout_width="match_parent"

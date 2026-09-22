@@ -138,7 +138,9 @@ def render(state="running", out="/tmp/widget_xml.png"):
             # text-sized; only bare TextViews fall back to their line box.
             kh = dp(k.get(A + "layout_height"), None)
             line_h.append(((kh if kh else text_h(sp)), mt))
-        total = sum(hh + mt for hh, mt in line_h if hh is not None)
+        # "gone" children record None and must be filtered BEFORE unpacking, or a
+        # layout with any gone child (hoursChrono, employerText) blows up here.
+        total = sum(e[0] + e[1] for e in line_h if e is not None)
         y0 = (PANEL_H - total) / 2 if el.get(A + "layout_centerVertical") else 0
 
         if el.get(A + "layout_alignParentEnd"):           # the controls stack
