@@ -515,9 +515,15 @@ class MainActivity : Activity() {
         cv.put("date", session.date)
         cv.put("start_time", session.startTime)
         cv.put("end_time", session.endTime)
-        cv.put("break_minutes", session.breakMinutes)
+        cv.put("break_minutes", clampedBreak(session))
         cv.put("notes", session.notes)
-        db.writableDatabase.insert("work_sessions", null, cv)
+        val rowId = db.writableDatabase.insert("work_sessions", null, cv)
+        if (rowId == -1L) {
+            // Don't claim success on a failed insert, and don't touch the export.
+            statusMessage = "Could not save that task"
+            renderAll()
+            return
+        }
         refreshData()
         // Write only this task's project workbook as soon as the task is saved.
         val exportErr = try { exportSite(session.jobSiteId); null } catch (e: Exception) { e.message }
@@ -529,13 +535,20 @@ class MainActivity : Activity() {
 
     private fun updateSession(session: WorkSession) {
         if (!isBookable(session)) return
-        android.content.ContentValues().apply {
+        val cv = android.content.ContentValues().apply {
             put("job_site_id", session.jobSiteId)
             put("date", session.date)
             put("start_time", session.startTime)
             put("end_time", session.endTime)
-            put("break_minutes", session.breakMinutes)
-            db.writableDatabase.update("work_sessions", this, "id=?", arrayOf(session.id.toString()))
+            put("break_minutes", clampedBreak(session))
+            put("notes", session.notes)
+        }
+        val rows = db.writableDatabase.update("work_sessions", cv, "id=?", arrayOf(session.id.toString()))
+        if (rows < 1) {
+            // The task is gone (deleted elsewhere) — say so instead of reporting success.
+            statusMessage = "That task no longer exists"
+            refreshData(); renderAll()
+            return
         }
         refreshData()
         // Keep only this task's project workbook in sync after an edit.
@@ -993,7 +1006,7 @@ private fun stopTimerNotification() {
             }
             body.addView(detailRow("Start", time12(session.startTime)))
             body.addView(detailRow("Stop", time12(session.endTime)))
-            if (session.breakMinutes > 0) body.addView(detailRow("Break", "${session.breakMinutes} min"))
+            if (clampedBreak(session) > 0) body.addView(detailRow("Break", "${clampedBreak(session)} min"))
         }
 
         card.addView(body, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -1799,14 +1812,23 @@ private fun stopTimerNotification() {
 
     // Minutes worked for one task. Tolerates junk rows written by older builds
     // (a blank start/end used to be storable) so one bad row can't take down
-    // every screen that totals sessions.
-    private fun workedMinutes(s: WorkSession): Int {
+    // every screen that totals sessions. A break longer than the shift used to
+    // come out negative and got summed into the week/pay-period totals as such.
+    private fun workedMinutes(s: WorkSession): Int =
+        (sessionSpanMinutes(s) - clampedBreak(s)).coerceAtLeast(0)
+
+    /** Raw wall-clock span of a task in minutes, ignoring the break. */
+    private fun sessionSpanMinutes(s: WorkSession): Int {
         val sm = parseTimeOfDay(s.startTime) ?: return 0
         val em = parseTimeOfDay(s.endTime) ?: return 0
         var diff = em - sm
         if (diff < 0) diff += 24 * 3600
-        return ((diff / 60) - s.breakMinutes.coerceAtLeast(0)).coerceAtLeast(0)
+        return diff / 60
     }
+
+    /** A break can never exceed the shift it belongs to. */
+    private fun clampedBreak(s: WorkSession): Int =
+        s.breakMinutes.coerceIn(0, sessionSpanMinutes(s))
 
     /** "HH:MM" (24h, as stored) -> seconds since midnight; null when unparseable. */
     private fun parseTimeOfDay(t: String): Int? = try {
@@ -2038,8 +2060,8 @@ private fun stopTimerNotification() {
     private fun buildRows(rows: List<WorkSession>): List<List<String>> {
             val out = mutableListOf(listOf("Date", "Start", "End", "Break (min)", "Worked (min)", "Notes"))
             rows.forEach { s ->
-                val worked = durationMinutes(s.startTime, s.endTime) - s.breakMinutes
-                out.add(listOf(isoDateDisplay(s.date), time12(s.startTime), time12(s.endTime), s.breakMinutes.toString(), worked.toString(), s.notes ?: ""))
+                val worked = (durationMinutes(s.startTime, s.endTime) - clampedBreak(s)).coerceAtLeast(0)
+                out.add(listOf(isoDateDisplay(s.date), time12(s.startTime), time12(s.endTime), clampedBreak(s).toString(), worked.toString(), s.notes ?: ""))
             }
             return out
         }
