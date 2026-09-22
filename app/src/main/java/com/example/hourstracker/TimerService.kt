@@ -37,6 +37,13 @@ class TimerService : Service() {
     private lateinit var openApp: PendingIntent
     private val handler = Handler(Looper.getMainLooper())
 
+    // The widget hero only renders whole minutes (H:MM), so it needs a nudge when
+    // that minute rolls over - the host's own updatePeriodMillis is floored at 30
+    // minutes, so without this the widget sat frozen while the clock ran. One
+    // RemoteViews push per minute is cheap; the notification itself still ticks
+    // every second.
+    private var lastWidgetMinute = Long.MIN_VALUE
+
     override fun onCreate() {
         super.onCreate()
         prefs = getSharedPreferences("hours_tracker", Context.MODE_PRIVATE)
@@ -50,15 +57,33 @@ class TimerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lastWidgetMinute = Long.MIN_VALUE
         syncNotification()
         handler.removeCallbacksAndMessages(null)
         handler.post(object : Runnable {
             override fun run() {
                 if (!syncNotification()) return // timer stopped -> service stopped itself
+                syncWidgetMinute()
                 handler.postDelayed(this, 1000L)
             }
         })
         return START_STICKY
+    }
+
+    /**
+     * Refresh the home-screen widget when the displayed minute changes. The widget
+     * shows today's whole minutes, so this is the only moment its value can change;
+     * it is also the thing that used to never happen while the clock was running.
+     */
+    private fun syncWidgetMinute() {
+        val minute = Clock.elapsedMs(prefs) / 60000L
+        if (minute == lastWidgetMinute) return
+        lastWidgetMinute = minute
+        try {
+            Widget3x1Provider.updateAll(this)
+        } catch (t: Throwable) {
+            // A widget that fails to update must never take the timer down with it.
+        }
     }
 
     /** Returns false (and stops the service) when the timer is not running. */

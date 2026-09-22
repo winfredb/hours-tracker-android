@@ -6,7 +6,6 @@ import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.os.SystemClock
 import android.widget.RemoteViews
 import java.time.LocalDate
 import java.time.LocalTime
@@ -95,17 +94,13 @@ class Widget3x1Provider : AppWidgetProvider() {
         }
 
         /**
-         * Same shape as the Chronometer renders ("MM:SS", or "H:MM:SS" past an hour,
-         * exactly like DateUtils.formatElapsedTime). Kept identical on purpose: the
-         * hero time must not change shape when the clock starts or stops.
+         * H:MM (e.g. "5:05") — whole minutes, no leading zero on the hour digit.
+         * The widget hero is deliberately minute-grained, so it is refreshed by
+         * TimerService on the minute rather than ticking per second.
          */
-        private fun formatClock(totalSec: Int): String {
-            val s = totalSec.coerceAtLeast(0)
-            val h = s / 3600
-            val m = (s % 3600) / 60
-            val sec = s % 60
-            return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, sec)
-            else String.format(Locale.US, "%02d:%02d", m, sec)
+        private fun formatMinutesShort(total: Int): String {
+            val h = total / 60; val m = total % 60
+            return String.format(Locale.US, "%d:%02d", h, m)
         }
 
         /** "HH:MM" as stored -> seconds since midnight; null when unparseable. */
@@ -190,10 +185,7 @@ class Widget3x1Provider : AppWidgetProvider() {
             val today = LocalDate.now().toString()
             val p = prefs(context)
 
-            // Booked (already saved) time today, in seconds. The live clock is added
-            // below, but kept apart from it: the running state is rendered by a
-            // Chronometer that needs a base offset, not a formatted string.
-            var bookedSec = 0
+            var minutesToday = 0
             var activeName = ""
             var activeEmployer = ""
             val db = HoursDb(context)
@@ -224,13 +216,12 @@ class Widget3x1Provider : AppWidgetProvider() {
                     val em = timeOfDay(c.getString(c.getColumnIndexOrThrow("end_time"))) ?: continue
                     var diff = em - sm
                     if (diff < 0) diff += 24 * 3600
-                    bookedSec += (diff / 60 - c.getInt(c.getColumnIndexOrThrow("break_minutes")).coerceAtLeast(0)).coerceAtLeast(0) * 60
+                    minutesToday += (diff / 60 - c.getInt(c.getColumnIndexOrThrow("break_minutes")).coerceAtLeast(0)).coerceAtLeast(0)
                 }
             }
             db.close()
-
-            val workedMs = Clock.elapsedMs(p)          // 0 unless actually running
-            val totalSec = bookedSec + (workedMs / 1000L).toInt()
+            // The live clock's whole minutes, on top of today's booked ones.
+            minutesToday += (Clock.elapsedMs(p) / 60000).toInt().coerceAtLeast(0)
 
             val running = p.getBoolean("clockRunning", false)
             val paused = p.getBoolean("clockPaused", false)
@@ -252,27 +243,12 @@ class Widget3x1Provider : AppWidgetProvider() {
             views.setTextViewText(R.id.jobName, nameLine)
             views.setTextColor(R.id.jobName, onSurface)
 
-            // Hero time. While the clock RUNS, a Chronometer ticks itself inside the host
-            // (one update per second, no work from us) so it matches the in-app
-            // seconds exactly. When idle or paused the value is frozen, so a plain
-            // TextView carries it — a Chronometer would keep counting through a pause.
-            if (running && !paused) {
-                // Base is an offset from boot, not a timestamp: "now" minus the work
-                // done so far, so the chronometer continues from today's booked time.
-                val base = SystemClock.elapsedRealtime() - (bookedSec * 1000L + workedMs)
-                views.setChronometer(R.id.hoursChrono, base, null, true)
-                views.setTextColor(R.id.hoursChrono, onSurface)
-                views.setViewVisibility(R.id.hoursChrono, android.view.View.VISIBLE)
-                views.setViewVisibility(R.id.hoursText, android.view.View.GONE)
-            } else {
-                // Stop it explicitly: a hidden Chronometer that is still "started"
-                // keeps ticking in the host for nothing.
-                views.setChronometer(R.id.hoursChrono, SystemClock.elapsedRealtime(), null, false)
-                views.setViewVisibility(R.id.hoursChrono, android.view.View.GONE)
-                views.setTextViewText(R.id.hoursText, formatClock(totalSec))
-                views.setTextColor(R.id.hoursText, onSurface)
-                views.setViewVisibility(R.id.hoursText, android.view.View.VISIBLE)
-            }
+            // Today's hours (whole minutes, H:MM). While the clock runs this is pushed
+            // fresh by TimerService whenever the minute rolls over — the host's own
+            // updatePeriodMillis is floored at 30 minutes, which is why this number
+            // used to sit still next to the in-app seconds counter.
+            views.setTextViewText(R.id.hoursText, formatMinutesShort(minutesToday))
+            views.setTextColor(R.id.hoursText, onSurface)
 
             // Job + employer under the hero time. The employer line collapses when
             // the job has none, so the column never keeps an empty gap.
