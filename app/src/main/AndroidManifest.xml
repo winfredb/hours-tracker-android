@@ -7,11 +7,16 @@
     <uses-permission android:name="android.permission.PINS_WIDGETS" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
+    <!-- No Auto Backup / device-transfer. With this on, Android silently restores
+         hours_tracker.db and the hours_tracker prefs at install, so a "clean
+         install" reappears with the previous data and the old pay period. The
+         JSON backup in Settings -> Backup is the only intended way data comes
+         back. Cost: losing the phone loses the data unless a file was saved. -->
     <application
         android:label="Hours Tracker"
         android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:enableOnBackInvokedCallback="false">
         <activity
             android:name=".MainActivity"
