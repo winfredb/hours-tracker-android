@@ -471,13 +471,40 @@ class MainActivity : Activity() {
     // Simple 4-value holder (keeps rangeSummary readable).
     private data class Quad(val totalMin: Int, val otMin: Int, val basePay: Double, val otPay: Double)
 
+    /** Tasks belonging to a project. Used by the delete confirmation and cleanup. */
+    private fun sessionsFor(id: Int): List<WorkSession> = sessions.filter { it.jobSiteId == id }
+
+    /** Says what actually happens to this project's tasks, count included. */
+    private fun deleteSiteMessage(id: Int): String {
+        val n = sessionsFor(id).size
+        val tasks = "$n task${if (n == 1) "" else "s"}"
+        return if (n == 0)
+            "The project is removed. It has no tasks."
+        else
+            "The project is removed and its $tasks are deleted with it. This can't be undone."
+    }
+
+    // Deleting a project takes its tasks with it. Previously the rows stayed
+    // behind with a job_site_id pointing at nothing: they still counted toward
+    // the week/pay-period totals, exported as "Unknown" and could not be cleaned
+    // up from the UI at all.
     private fun deleteSite(id: Int) {
+        val site = jobSites.find { it.id == id }
+        val removed = sessionsFor(id).size
         // Remove this project's exported workbook along with the project.
-        jobSites.find { it.id == id }?.let { site ->
-            val safeName = site.name.replace("/", "-").replace("\\\\", "-").trim() + ".xlsx"
-            deleteDownload("Tasks", safeName)
-        }
+        site?.let { deleteDownload("Tasks", workbookName(it.name)) }
+        db.writableDatabase.delete("work_sessions", "job_site_id=?", arrayOf(id.toString()))
         db.writableDatabase.delete("job_sites", "id=?", arrayOf(id.toString()))
+        // Don't leave the clock pointed at a project that no longer exists.
+        if (activeJobId == id) {
+            activeJobId = -1
+            persistClock()
+        }
+        val label = site?.name ?: "project"
+        statusMessage = if (removed > 0)
+            "Deleted \"$label\" and $removed task${if (removed == 1) "" else "s"}"
+        else
+            "Deleted \"$label\""
         refreshData(); renderAll()
     }
 
@@ -1407,7 +1434,7 @@ private fun stopTimerNotification() {
                                 "Edit" -> showEditProject(site)
                                 "Delete" -> AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                                     .setTitle("Delete ${site.name}?")
-                                    .setMessage("Tasks will stay; the project is removed.")
+                                    .setMessage(deleteSiteMessage(site.id))
                                     .setPositiveButton("Delete") { _, _ -> deleteSite(site.id) }
                                     .setNegativeButton("Cancel", null)
                                     .show()
@@ -1960,11 +1987,19 @@ private fun stopTimerNotification() {
         }
     }
 
+    /** Filename for a project's exported workbook. One definition, because the
+     *  writer, the overwrite-cleanup and the project-delete all have to agree:
+     *  otherwise deleting a project stops removing its workbook. The old copies
+     *  replaced "\\" — two backslashes — so a name containing one backslash
+     *  never matched the file that was actually written. */
+    private fun workbookName(siteName: String): String =
+        siteName.replace("/", "-").replace("\\", "-").trim().ifBlank { "project" } + ".xlsx"
+
     /** Writes (or removes) only this project's exported workbook — not every project's. */
     private fun exportSite(siteId: Int) {
         val site = jobSites.find { it.id == siteId } ?: return
         val siteSessions = sessions.filter { it.jobSiteId == siteId }.sortedWith(compareBy({ it.date }, { it.startTime }))
-        val safeName = site.name.replace("/", "-").replace("\\\\", "-").trim() + ".xlsx"
+        val safeName = workbookName(site.name)
         if (siteSessions.isEmpty()) {
             // No tasks left for this project — remove its stale export.
             deleteDownload("Tasks", safeName)
@@ -1981,8 +2016,11 @@ private fun stopTimerNotification() {
         try {
             val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}"
             val base = canonicalName.removeSuffix(".xlsx")
-            val pattern = "$base (%).xlsx"
-            val sel = "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? AND ${MediaStore.Downloads.RELATIVE_PATH}=?"
+            // The project name is literal data, so % and _ inside it must be escaped
+            // or LIKE treats them as wildcards ("Job_1" would also match "JobX1 (1).xlsx").
+            val literal = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            val pattern = "$literal (%).xlsx"
+            val sel = "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? ESCAPE '\\' AND ${MediaStore.Downloads.RELATIVE_PATH}=?"
             val ids = mutableListOf<Long>()
             contentResolver.query(
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI,
