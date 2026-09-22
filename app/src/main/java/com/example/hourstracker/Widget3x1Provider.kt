@@ -172,10 +172,7 @@ class Widget3x1Provider : AppWidgetProvider() {
                 db.writableDatabase.insert("work_sessions", null, cv)
                 db.close()
             } catch (t: Throwable) { }
-            // Refresh this project's workbook: the widget books sessions without
-            // opening the app, and previously the .xlsx silently missed them until
-            // the user next edited a task.
-            try { ProjectWorkbook.exportSite(context, jobId) } catch (t: Throwable) { }
+            // No workbook is written: the DB is the record, and backups are on demand.
             syncTimerService(context)
         }
 

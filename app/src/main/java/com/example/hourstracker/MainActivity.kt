@@ -491,8 +491,6 @@ class MainActivity : Activity() {
     private fun deleteSite(id: Int) {
         val site = jobSites.find { it.id == id }
         val removed = sessionsFor(id).size
-        // Remove this project's exported workbook along with the project.
-        site?.let { deleteDownload("Tasks", ProjectWorkbook.name(it.name)) }
         db.writableDatabase.delete("work_sessions", "job_site_id=?", arrayOf(id.toString()))
         db.writableDatabase.delete("job_sites", "id=?", arrayOf(id.toString()))
         // Don't leave the clock pointed at a project that no longer exists.
@@ -525,11 +523,10 @@ class MainActivity : Activity() {
             return
         }
         refreshData()
-        // Write only this task's project workbook as soon as the task is saved.
-        val exportErr = try { exportSite(session.jobSiteId); null } catch (e: Exception) { e.message }
-        statusMessage = if (exportErr == null)
-            "Saved ✓ ${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}"
-        else "Saved ✓ (export failed: $exportErr)"
+        // No file is written here. Saving a task used to rewrite the project's
+        // .xlsx on the main thread; the database is the record of truth and
+        // backups (.json) are on demand, so a save is now purely a DB write.
+        statusMessage = "Saved ✓ ${isoDateDisplay(session.date)} ${time12(session.startTime)}-${time12(session.endTime)}"
         renderAll()
     }
 
@@ -551,20 +548,14 @@ class MainActivity : Activity() {
             return
         }
         refreshData()
-        // Keep only this task's project workbook in sync after an edit.
-        val exportErr = try { exportSite(session.jobSiteId); null } catch (e: Exception) { e.message }
-        statusMessage = if (exportErr == null)
-            "Updated ✓ ${isoDateDisplay(session.date)}"
-        else "Updated ✓ (export failed: $exportErr)"
+        statusMessage = "Updated ✓ ${isoDateDisplay(session.date)}"
         renderAll()
     }
 
     private fun deleteSession(session: WorkSession) {
         db.writableDatabase.delete("work_sessions", "id=?", arrayOf(session.id.toString()))
         refreshData()
-        // Refresh (or remove) only this task's project workbook.
-        val exportErr = try { exportSite(session.jobSiteId); null } catch (e: Exception) { e.message }
-        statusMessage = if (exportErr == null) "Deleted ✓" else "Deleted ✓ (export failed: $exportErr)"
+        statusMessage = "Deleted ✓"
         renderAll()
     }
 
@@ -1220,8 +1211,18 @@ private fun stopTimerNotification() {
         col.addView(settingsGroup("Appearance", listOf(
             settingsRowValue("Theme", themeLabel()) { toggleDark() }
         )))
+
+        // ---- Backup / restore ----
+        col.addView(settingsGroup("Backup & restore", listOf(
+            settingsRowValue("Back up now", lastBackupLabel()) { startBackup() },
+            settingsRowValue("Restore from file", "Choose file") { confirmRestore() }
+        )))
         return col
     }
+
+    /** "never" until the first backup, then the date the last one was written. */
+    private fun lastBackupLabel(): String =
+        Backup.prettyStamp(prefs.getString("last_backup_at", null))
 
     /** A settings group: caption + card whose rows are split by hairline dividers. */
     private fun settingsGroup(caption: String, rows: List<View>): View {
@@ -1334,7 +1335,7 @@ private fun stopTimerNotification() {
         menuCard("Projects", "Job sites & rates") { drawerTab = 0; navScreen = 1; filteredSiteId = null; closeDrawer(); renderAll() }
         menuCard("Tasks", "Recorded sessions") { drawerTab = 1; navScreen = 2; filteredSiteId = null; closeDrawer(); renderAll() }
         menuCard("Settings", "Overtime, pay period, theme") { drawerTab = 2; navScreen = 3; filteredSiteId = null; closeDrawer(); renderAll() }
-        menuCard("Export", "Download workbooks (.xlsx)") { closeDrawer(); showExportRange() }
+        menuCard("Export", "Download a summary PDF") { closeDrawer(); showExportRange() }
 
         // Spacer pushes the credit line to the bottom of the (full-height) menu.
         col.addView(View(this).apply {}, LinearLayout.LayoutParams(1, 0).apply { weight = 1f })
@@ -1927,22 +1928,6 @@ private fun stopTimerNotification() {
     private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): Pair<String, Uri?> =
         ProjectWorkbook.write(this, subdir, filename, bytes)
 
-    /** Removes a previously exported file from Downloads/HoursTracker/<subdir>/<filename>. */
-    private fun deleteDownload(subdir: String, filename: String) =
-        ProjectWorkbook.delete(this, subdir, filename)
-
-    /** Deletes MediaStore entries like "Name (1).xlsx" left by earlier duplicate inserts. */
-    private fun deleteDownloadCopies(subdir: String, canonicalName: String) =
-        ProjectWorkbook.deleteCopies(this, subdir, canonicalName)
-
-    /** Writes (or removes) only this project's exported workbook — not every project's. */
-    private fun exportSite(siteId: Int) {
-        // Delegated: the widget books sessions without opening the app and needs the
-        // same writer (and the same filename rules), so there is one copy of it in
-        // ProjectWorkbook. It reads the project's sessions from the DB itself.
-        ProjectWorkbook.exportSite(this, siteId)
-    }
-
     /** Shares a generated file (e.g. exported PDF) via the system share sheet. */
     private fun shareFile(filename: String, uri: Uri?) {
         if (uri == null) {
@@ -1961,6 +1946,120 @@ private fun stopTimerNotification() {
         } catch (e: Exception) {
             statusMessage = "Share failed: ${e.message}"
             renderAll()
+        }
+    }
+
+    // ==================== BACKUP / RESTORE ====================
+    //
+    // One JSON file holds every project and every task (dates, times, breaks,
+    // notes, wages, and the overtime/pay-period/theme settings). Restoring it
+    // rebuilds the database, which is what makes a clean install recoverable.
+    //
+    // Both directions go through the system document picker (Storage Access
+    // Framework) instead of writing into Downloads ourselves. A file we put in
+    // Downloads is owned by the app and is *not* readable after a reinstall —
+    // and on Android 13+ we cannot read other apps' Downloads documents at all.
+    // A file the user picks themselves survives uninstall and reinstall, can be
+    // synced to Drive, and needs no storage permission on any API level.
+
+    private val reqBackup = 3001
+    private val reqRestore = 3002
+
+    private fun startBackup() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, Backup.suggestedName())
+        }
+        try {
+            startActivityForResult(intent, reqBackup)
+        } catch (e: Exception) {
+            infoDialog("Backup", "No file manager available to save the backup.")
+        }
+    }
+
+    private fun confirmRestore() {
+        val counts = Backup.currentCounts(this)
+        AlertDialog.Builder(this, pickerDialogThemeId())
+            .setTitle("Restore from file?")
+            .setMessage(
+                "Restoring replaces everything on this device. If you haven't backed " +
+                "up in a while, do that first.\n\nCurrent: ${Backup.describe(counts.first, counts.second)}."
+            )
+            .setPositiveButton("Choose file") { _, _ ->
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                }
+                try {
+                    startActivityForResult(intent, reqRestore)
+                } catch (e: Exception) {
+                    infoDialog("Restore", "No file manager available to open the backup.")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun infoDialog(title: String, message: String) {
+        AlertDialog.Builder(this, pickerDialogThemeId())
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            reqBackup -> {
+                try {
+                    val json = Backup.build(this, prefs)
+                    contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                        out.write(json.toByteArray(Charsets.UTF_8))
+                    } ?: throw IllegalStateException("Could not open that file for writing")
+                    prefs.edit().putString("last_backup_at", java.time.LocalDateTime.now().toString()).apply()
+                    val c = Backup.currentCounts(this)
+                    statusMessage = "Backed up ${Backup.describe(c.first, c.second)} ✓"
+                    infoDialog(
+                        "Backup complete ✓",
+                        "Saved ${uri.lastPathSegment ?: "backup file"}\n\n" +
+                            "It holds every project and task, including times and breaks. " +
+                            "Keep a copy off this phone (Drive, email) so it survives losing the device."
+                    )
+                } catch (e: Exception) {
+                    infoDialog("Backup failed", e.message ?: "Unknown error")
+                }
+                refreshData(); renderAll()
+            }
+            reqRestore -> {
+                try {
+                    val text = contentResolver.openInputStream(uri)?.use {
+                        it.readBytes().toString(Charsets.UTF_8)
+                    } ?: throw IllegalStateException("Could not read that file")
+                    val r = Backup.restore(this, prefs, text)
+                    // Reload first: the check below is against the restored projects.
+                    refreshData()
+                    // The clock must not point at a project id that no longer exists.
+                    if (jobSites.none { it.id == activeJobId }) {
+                        activeJobId = -1
+                        persistClock()
+                    }
+                    statusMessage = "Restored ${Backup.describe(r.projects, r.tasks)} ✓"
+                    infoDialog(
+                        "Restored ✓",
+                        Backup.describe(r.projects, r.tasks) + " restored." +
+                            if (r.skipped > 0)
+                                "\n\n${r.skipped} unreadable task(s) in the file were skipped."
+                            else ""
+                    )
+                } catch (e: Exception) {
+                    infoDialog("Restore failed", e.message ?: "Unknown error")
+                }
+                refreshData(); renderAll()
+            }
         }
     }
 
@@ -2051,9 +2150,9 @@ private fun stopTimerNotification() {
 
         /**
          * Builds the date-range summary PDF and writes it to
-         * Downloads/HoursTracker/Export/. (Per-project .xlsx workbooks are written
-         * by ProjectWorkbook as tasks are saved; this range report is PDF-only —
-         * the old comment here promised an xlsx that was never written.)
+         * Downloads/HoursTracker/Export/. This is the only file the app writes on
+         * its own — per-project .xlsx workbooks are gone, so nothing is rewritten
+         * in the background when a task is saved.
          * Summary page = per-project totals with an hh:mm grand total; By Week
          * page = each project's weekly hh:mm totals (weeks start Sunday) plus a
          * per-week grand total row.
