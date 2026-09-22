@@ -17,8 +17,20 @@ import java.util.Locale
  *   - timerBtn  toggles Start / Pause / Resume entirely in-widget via an explicit
  *               broadcast back to this provider (onReceive -> toggleTimer).
  *   - stopBtn   books the session to the active job in-widget (no app launch).
- *   - jobName   is the top row: the active job, full width and set large.
- *   - hoursText is the bottom-left: today's hours worked.
+ *   - hoursText is the hero line at the TOP of the left column (30sp bold):
+ *               today's hours worked.
+ *   - jobName   sits under it (12sp bold), then employerText (11sp, muted).
+ *   - stateStripeOn / stateStripeOff are two stacked 6x90dp Views on the left
+ *               edge; exactly one is visible, picked from the clock state. Two
+ *               sibling views are used instead of one view + a runtime
+ *               background swap because setViewVisibility is reliably remotable
+ *               and setBackgroundResource here has never been verified on device.
+ *
+ * v3.44 "accent stripe" layout (the user picked it from a true-size mockup sheet).
+ * The button FILLS live in the layout XML drawables and nothing writes a button
+ * background at runtime any more: the previous code called
+ * setInt(id, "setBackgroundColor", ...), which replaces the drawable with a plain
+ * ColorDrawable — that is what rendered the round controls as solid squares.
  *
  * Both PendingIntents MUST be getBroadcast (this is a BroadcastReceiver, not an
  * Activity) and MUST carry FLAG_IMMUTABLE — on targetSdk 31+ creating a
@@ -190,12 +202,22 @@ class Widget3x1Provider : AppWidgetProvider() {
 
             var minutesToday = 0
             var activeName = ""
+            var activeEmployer = ""
             val db = HoursDb(context)
             val activeId = p.getInt("activeJobId", -1)
             if (activeId >= 1) {
                 db.readableDatabase.rawQuery("SELECT name FROM job_sites WHERE id=?", arrayOf(activeId.toString())).use { c ->
                     if (c.moveToNext()) activeName = c.getString(c.getColumnIndexOrThrow("name")) ?: ""
                 }
+                // Separate query, in its own try/catch: "employer" only exists on
+                // DBs that ran the ALTER TABLE upgrade, and a throw here would
+                // abort build() and ship an EMPTY widget (callers fall back to a
+                // bare RemoteViews). A missing column must only cost the subtitle.
+                try {
+                    db.readableDatabase.rawQuery("SELECT employer FROM job_sites WHERE id=?", arrayOf(activeId.toString())).use { c ->
+                        if (c.moveToNext()) activeEmployer = c.getString(0) ?: ""
+                    }
+                } catch (t: Throwable) { activeEmployer = "" }
             }
             db.readableDatabase.rawQuery(
                 "SELECT start_time, end_time, break_minutes FROM work_sessions WHERE date=?",
@@ -215,19 +237,12 @@ class Widget3x1Provider : AppWidgetProvider() {
             val running = p.getBoolean("clockRunning", false)
             val paused = p.getBoolean("clockPaused", false)
 
-            val dark = resolveDark(context)
             // Root panel is the solid dark shape declared in the layout XML.
             // Do NOT override it at runtime: setBackgroundColor would replace the
             // drawable outright (losing the rounded corners) and would also
             // re-introduce the transparent-widget look the panel is meant to fix.
             // Because the panel is always dark, text is always the light on-dark tone.
             val onSurface = 0xFFE1E3DE.toInt()
-            val btnFg = if (dark) 0xFF00251A.toInt() else 0xFFFFFFFF.toInt()
-            val toggleFill = when {
-                !running -> 0xFF00695C.toInt()            // teal: Start
-                paused -> 0xFFFF6D00.toInt()               // orange: Resume
-                else -> 0xFFFFC107.toInt()                 // gold: Pause
-            }
 
             val views = RemoteViews(context.packageName, R.layout.widget_3x1)
 
@@ -243,6 +258,20 @@ class Widget3x1Provider : AppWidgetProvider() {
             views.setTextViewText(R.id.hoursText, formatMinutesShort(minutesToday))
             views.setTextColor(R.id.hoursText, onSurface)
 
+            // Job + employer under the hero time. The employer line collapses when
+            // the job has none, so the column never keeps an empty gap.
+            views.setTextViewText(R.id.employerText, activeEmployer)
+            views.setViewVisibility(
+                R.id.employerText,
+                if (activeEmployer.isBlank()) android.view.View.GONE else android.view.View.VISIBLE)
+
+            // Left edge stripe = clock state. Idle (brick) is the XML default, so a
+            // widget that has never been updated still reads as idle rather than
+            // "running".
+            val active = running || paused
+            views.setViewVisibility(R.id.stateStripeOn, if (active) android.view.View.VISIBLE else android.view.View.GONE)
+            views.setViewVisibility(R.id.stateStripeOff, if (active) android.view.View.GONE else android.view.View.VISIBLE)
+
             val toggleLabel = when {
                 !running -> "▶"     // start (idle)
                 paused -> "▶"      // resume (paused)
@@ -250,9 +279,12 @@ class Widget3x1Provider : AppWidgetProvider() {
             }
             views.setTextViewText(R.id.timerBtn, toggleLabel)
 
-            views.setInt(R.id.timerBtn, "setBackgroundColor", toggleFill)
-            views.setTextColor(R.id.timerBtn, btnFg)
-            views.setInt(R.id.stopBtn, "setBackgroundColor", 0xFFFF4038.toInt())
+            // NO setBackgroundColor on the controls. The fills are the oval
+            // drawables declared in widget_3x1.xml (@drawable/widget_circle_teal /
+            // _brick); a runtime background write would swap them for a plain
+            // ColorDrawable and square off the circles, which is exactly the
+            // defect this layout was rewritten to fix. Glyphs stay white.
+            views.setTextColor(R.id.timerBtn, 0xFFFFFFFF.toInt())
             views.setTextColor(R.id.stopBtn, 0xFFFFFFFF.toInt())
 
             val togglePi = PendingIntent.getBroadcast(

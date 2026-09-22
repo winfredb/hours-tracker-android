@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.hourstracker2"
         minSdk = 26
         targetSdk = 36
-        versionCode = 48
-        versionName = "3.28"
+        versionCode = 66
+        versionName = "3.45"
     }
 
     compileOptions {

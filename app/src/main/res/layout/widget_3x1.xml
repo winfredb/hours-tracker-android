@@ -1,87 +1,150 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Home-screen 3x1 widget with timer controls.
+<!--
+     HoursTracker 3x1 widget - "ACCENT STRIPE" layout (v3.44).
 
-     NESTING IS SUPPORTED — CONFIRMED (v3.28, user-verified on device).
-     An earlier note in this file claimed "this host rejects nested layouts
-     (they render blank/kill clicks)". That was a MISDIAGNOSIS, made in the same
-     session the buttons were dead for an unrelated reason: the missing
-     PendingIntent mutability flag (targetSdk 31+ throws IllegalArgumentException,
-     swallowed by a try/catch). Once that was fixed, nesting worked first try.
-     Do NOT reintroduce the flat-single-row workaround on account of nesting.
+     The user picked this from a true-size mockup sheet (option 2 of 4). Panel is
+     the real Pixel 9 Pro XL 3x1 cell: 253 x 134dp. All coordinates below are the
+     mockup's own dp values transcribed one-to-one, so the shipped widget matches
+     the sheet he approved.
 
-     Structure:
-       Root (vertical)
-         +- jobName   : full-width name line across the top
-         +- row       : horizontal container
-              +- hoursText : weight 1
-              +- timerBtn  : weight 1
-              +- stopBtn   : weight 1
+     GEOMETRY (relative, so it survives a resize)
+       Root = RelativeLayout, NO padding (mockup x/y are panel-absolute).
+         stateStripeOn  : View 6dp x 90dp, centreVertical, marginStart 10dp
+         stateStripeOff : same box, visibility toggled against stateStripeOn
+                          (two sibling views rather than one + a runtime
+                          background swap: setViewVisibility is reliably
+                          remotable, setBackgroundResource is not something this
+                          project has verified.)
+         infoColumn     : LinearLayout vertical, centreVertical, marginStart 28dp,
+                          width match_parent, marginEnd 92dp  (text may never run
+                          under the controls)
+             hoursText   : 30sp bold  -> the hero time, TOP line
+             jobName     : 12sp bold, marginTop 4dp
+             employerText: 11sp, collapsed when the job has no employer
+         controls       : LinearLayout vertical, alignParentEnd, centreVertical,
+                          marginEnd 16dp
+             timerBtn    : 42dp oval (teal), glyph swaps to the Pause mark
+             stopBtn     : 42dp oval (brick), marginTop 8dp
 
-     Text/colors set at runtime. Root background is the solid dark panel
-     (@drawable/widget_bg_dark, #1B1F1D, 24dp corners) so the letters never
-     float over the wallpaper. Keep a concrete background declared in XML: on
-     Android 12+ the launcher inspects the layout to identify a background — if
-     none is declared it paints its own opaque system panel instead. -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+     WHY THE BUTTONS HAVE android:background IN XML
+     The old build called setInt(id, "setBackgroundColor", ...) for every state.
+     That REPLACES the drawable with a plain ColorDrawable, so the ovals rendered
+     as solid SQUARES however round the drawable was - which is a real part of why
+     the previous widget read as sloppy. The fill is now baked into the drawables
+     and nothing touches the button background at runtime. State is carried by the
+     glyph (play vs pause) and by the stripe colour.
+
+     Two 42dp circles with an 8dp gap = 92dp, centred in 134dp, put their centres
+     at y=42 and y=92 - exactly the mockup's values.
+
+     minHeight/minResizeHeight in res/xml/widget_3x1_info.xml MUST stay 60dp:
+     those feed the launcher's SPAN calculation, not the layout. 130dp made the
+     widget render as 3x2.
+-->
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widgetRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="@drawable/widget_bg_dark"
-    android:padding="8dp">
+    android:background="@drawable/widget_bg_dark">
 
-    <TextView android:id="@+id/jobName"
+    <!-- MUST be ImageView, NOT <View>. RemoteViews inflates via a LayoutInflater
+         filter that requires @RemoteViews.RemoteView on the class; android.view.View
+         is annotated @UiThread only, so a bare <View> makes the launcher reject the
+         ENTIRE layout -> "Can't load widget". ImageView/TextView carry the
+         annotation and draw their android:background shape just the same. -->
+    <ImageView android:id="@+id/stateStripeOn"
+        android:layout_width="6dp"
+        android:layout_height="90dp"
+        android:layout_centerVertical="true"
+        android:layout_marginStart="10dp"
+        android:background="@drawable/widget_stripe_active"
+        android:visibility="gone"/>
+
+    <ImageView android:id="@+id/stateStripeOff"
+        android:layout_width="6dp"
+        android:layout_height="90dp"
+        android:layout_centerVertical="true"
+        android:layout_marginStart="10dp"
+        android:background="@drawable/widget_stripe_idle"
+        android:visibility="visible"/>
+
+    <LinearLayout android:id="@+id/infoColumn"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="start|center_vertical"
-        android:singleLine="true"
-        android:ellipsize="end"
-        android:textSize="14sp"
-        android:text=""/>
-
-    <LinearLayout android:id="@+id/row"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal"
-        android:gravity="center_vertical">
+        android:layout_centerVertical="true"
+        android:layout_marginStart="28dp"
+        android:layout_marginEnd="92dp"
+        android:orientation="vertical">
 
         <TextView android:id="@+id/hoursText"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:gravity="start|center_vertical"
             android:singleLine="true"
-            android:textSize="18sp"
+            android:ellipsize="end"
+            android:textSize="30sp"
             android:textStyle="bold"
+            android:textColor="#E1E3DE"
             android:text=""/>
 
-        <Button android:id="@+id/timerBtn"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginStart="2dp"
-            android:gravity="center"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:textSize="20sp"
-            android:text="▶"/>
+        <TextView android:id="@+id/jobName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:textColor="#E1E3DE"
+            android:layout_marginTop="4dp"
+            android:text=""/>
 
-        <Button android:id="@+id/stopBtn"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:layout_marginStart="2dp"
-            android:gravity="center"
-            android:minWidth="0dp"
-            android:minHeight="0dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:textSize="20sp"
-            android:text="■"/>
+        <TextView android:id="@+id/employerText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:textSize="11sp"
+            android:textColor="#A7B0AB"
+            android:text=""/>
 
     </LinearLayout>
 
-</LinearLayout>
+    <LinearLayout android:id="@+id/controls"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentEnd="true"
+        android:layout_centerVertical="true"
+        android:layout_marginEnd="16dp"
+        android:orientation="vertical">
+
+        <Button android:id="@+id/timerBtn"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="@drawable/widget_circle_teal"
+            android:gravity="center"
+            android:padding="0dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:textSize="17sp"
+            android:textColor="#FFFFFF"
+            android:text="&#9654;"/>
+
+        <Button android:id="@+id/stopBtn"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/widget_circle_brick"
+            android:gravity="center"
+            android:padding="0dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:textSize="17sp"
+            android:textColor="#FFFFFF"
+            android:text="&#9632;"/>
+
+    </LinearLayout>
+
+</RelativeLayout>
