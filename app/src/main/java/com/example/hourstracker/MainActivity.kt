@@ -1214,10 +1214,69 @@ private fun stopTimerNotification() {
 
         // ---- Backup / restore ----
         col.addView(settingsGroup("Backup & restore", listOf(
+            settingsRowValue(
+                "Automatic backup",
+                if (prefs.getBoolean(AutoBackup.KEY_ENABLED, false)) "On" else "Off"
+            ) { toggleAutoBackup() },
+            settingsRowValue("Back up at", AutoBackup.displayTime(prefs)) { pickAutoBackupTime() },
+            settingsRowValue("Backup to", autoBackupDestLabel()) { pickAutoBackupDest() },
             settingsRowValue("Back up now", lastBackupLabel()) { startBackup() },
             settingsRowValue("Restore from file", "Choose file") { confirmRestore() }
         )))
         return col
+    }
+
+    /** "Choose file" until a destination is saved, then its file name. */
+    private fun autoBackupDestLabel(): String =
+        prefs.getString(AutoBackup.KEY_NAME, null)
+            ?: prefs.getString(AutoBackup.KEY_URI, null)?.let {
+                (android.net.Uri.parse(it)).lastPathSegment
+            }
+            ?: "Choose file"
+
+    /** Flip the daily backup. Turning it on with no destination picks one first. */
+    private fun toggleAutoBackup() {
+        val on = !prefs.getBoolean(AutoBackup.KEY_ENABLED, false)
+        if (on && prefs.getString(AutoBackup.KEY_URI, null) == null) {
+            pendingEnableAfterDest = true // save the flip for when the file is chosen
+            launchAutoBackupDestPicker()
+            return
+        }
+        prefs.edit().putBoolean(AutoBackup.KEY_ENABLED, on).apply()
+        AutoBackup.schedule(this, prefs)
+        statusMessage = if (on) "Automatic backup on — daily at ${AutoBackup.displayTime(prefs)}"
+        else "Automatic backup off"
+        renderAll()
+    }
+
+    private fun pickAutoBackupTime() {
+        val t = prefs.getString(AutoBackup.KEY_TIME, AutoBackup.DEFAULT_TIME) ?: AutoBackup.DEFAULT_TIME
+        val p = t.split(":").mapNotNull { it.toIntOrNull() }
+        TimePickerDialog(this, pickerDialogThemeId(), { _, h, m ->
+            prefs.edit().putString(AutoBackup.KEY_TIME, String.format(Locale.US, "%02d:%02d", h, m)).apply()
+            // Re-arm so the new time applies even mid-day.
+            if (prefs.getBoolean(AutoBackup.KEY_ENABLED, false)) AutoBackup.schedule(this, prefs)
+            statusMessage = "Daily backup set for ${AutoBackup.displayTime(prefs)}"
+            renderAll()
+        }, p.getOrElse(0) { 21 }, p.getOrElse(1) { 0 }, false).show()
+    }
+
+    private fun pickAutoBackupDest() {
+        pendingEnableAfterDest = false // changing the destination shouldn't toggle it
+        launchAutoBackupDestPicker()
+    }
+
+    private fun launchAutoBackupDestPicker() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, Backup.suggestedName())
+        }
+        try {
+            startActivityForResult(intent, reqAutoBackupDest)
+        } catch (e: Exception) {
+            infoDialog("Automatic backup", "No file manager available to choose a destination.")
+        }
     }
 
     /** "never" until the first backup, then the date the last one was written. */
@@ -1964,6 +2023,10 @@ private fun stopTimerNotification() {
 
     private val reqBackup = 3001
     private val reqRestore = 3002
+    private val reqAutoBackupDest = 3003
+
+    /** True while the destination picker is up because "Automatic backup" was toggled on. */
+    private var pendingEnableAfterDest = false
 
     private fun startBackup() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
@@ -2014,6 +2077,30 @@ private fun stopTimerNotification() {
         if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         when (requestCode) {
+            reqAutoBackupDest -> {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (e: Exception) {
+                    // Provider refuses persistable grants (some do). The write still
+                    // works for this session; auto-backup just can't run headlessly.
+                }
+                prefs.edit()
+                    .putString(AutoBackup.KEY_URI, uri.toString())
+                    .putString(AutoBackup.KEY_NAME, uri.lastPathSegment ?: "backup.json")
+                    .putBoolean(
+                        AutoBackup.KEY_ENABLED,
+                        pendingEnableAfterDest || prefs.getBoolean(AutoBackup.KEY_ENABLED, false)
+                    )
+                    .apply()
+                pendingEnableAfterDest = false
+                AutoBackup.schedule(this, prefs)
+                statusMessage = if (prefs.getBoolean(AutoBackup.KEY_ENABLED, false))
+                    "Automatic backup on — daily at ${AutoBackup.displayTime(prefs)}"
+                else "Destination set — turn on automatic backup to schedule it"
+                renderAll()
+            }
             reqBackup -> {
                 try {
                     val json = Backup.build(this, prefs)

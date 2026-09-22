@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.PINS_WIDGETS" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- No Auto Backup / device-transfer. With this on, Android silently restores
          hours_tracker.db and the hours_tracker prefs at install, so a "clean
@@ -45,6 +46,18 @@
                 <category android:name="android.appwidget.category.DEFAULT" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_3x1_info" />
+        </receiver>
+
+        <!-- Daily automatic backup. exported=false: the alarm PendingIntent is
+             this app's own, and BOOT_COMPLETED is a protected broadcast the
+             system delivers straight to it. Runs the same JSON build as the
+             manual button, writing to the SAF destination chosen in Settings. -->
+        <receiver
+            android:name=".AutoBackupReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
         </receiver>
     </application>
 </manifest>
