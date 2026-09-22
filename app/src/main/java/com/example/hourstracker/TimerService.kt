@@ -63,22 +63,18 @@ class TimerService : Service() {
 
     /** Returns false (and stops the service) when the timer is not running. */
     private fun syncNotification(): Boolean {
-        val running = prefs.getBoolean("clockRunning", false)
-        val paused = prefs.getBoolean("clockPaused", false)
-        if (!running) {
-            if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+        val state = Clock.read(prefs)
+        if (!state.running) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return false
         }
-        val seg = prefs.getLong("segmentStartMs", 0L)
-        val acc = prefs.getLong("accumulatedMs", 0L)
-        val startedAt = prefs.getString("startedAt", "") ?: ""
-        val elapsed = if (!paused && seg != 0L) acc + (System.currentTimeMillis() - seg) else acc
-        val title = if (paused) "Timer paused" else "Timer running"
-        val text = if (paused)
-            "Tap to resume — $startedAt • ${formatElapsed(elapsed)}"
+        val elapsed = Clock.elapsedMs(prefs)
+        val title = if (state.paused) "Timer paused" else "Timer running"
+        val text = if (state.paused)
+            "Tap to resume — ${state.startedAt} • ${formatElapsed(elapsed)}"
         else
-            "Working since $startedAt • ${formatElapsed(elapsed)}"
+            "Working since ${state.startedAt} • ${formatElapsed(elapsed)}"
 
         val notification = if (Build.VERSION.SDK_INT >= 26)
             Notification.Builder(this, CHANNEL_ID)

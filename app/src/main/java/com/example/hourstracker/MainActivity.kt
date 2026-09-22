@@ -61,8 +61,12 @@ class MainActivity : Activity() {
     // Persisted wall-clock state so the clock keeps accruing even if the
     // process is killed. segmentStartMs = epoch of the current running segment
     // (0 when paused/stopped); accumulatedMs = time banked from earlier segments.
+    // pausedAccumMs/pauseStartedMs carry the paused spans, which get booked as the
+    // task's break instead of counting as work. All of it is owned by Clock.
     private var segmentStartMs = 0L
     private var accumulatedMs = 0L
+    private var pausedAccumMs = 0L
+    private var pauseStartedMs = 0L
 
     // Signature of the clock/job/session state the CURRENT layout was built from.
     // The home-screen widget writes prefs directly (it never opens the app), so
@@ -116,8 +120,9 @@ class MainActivity : Activity() {
         // the running clock, booking the session to the active job (no picker).
         if (getIntent()?.action == "com.example.hourstracker.CMD_STOP" && clockRunning) {
             if (activeSite() == null) {
-                clockPaused = true
-                persistClock()
+                // Pause while the picker is up so the wait isn't silently worked.
+                Clock.pause(prefs)
+                restoreClockState()
                 showJobPicker("Which job are you working on?") { s -> stopClock(s.id) }
             } else {
                 stopClock(activeJobId)
@@ -533,30 +538,31 @@ class MainActivity : Activity() {
     // clock keeps accruing seamlessly.
 
 private fun persistClock() {
-    prefs.edit()
-        .putBoolean("clockRunning", clockRunning)
-        .putBoolean("clockPaused", clockPaused)
-        .putString("startedAt", startedAt)
-        .putLong("segmentStartMs", segmentStartMs)
-        .putLong("accumulatedMs", accumulatedMs)
-        .putInt("activeJobId", activeJobId)
-        .apply()
-}
+        Clock.write(prefs, Clock.State(
+            running = clockRunning,
+            paused = clockPaused,
+            startedAt = startedAt,
+            segmentStartMs = segmentStartMs,
+            accumulatedMs = accumulatedMs,
+            pausedAccumMs = pausedAccumMs,
+            pauseStartedMs = pauseStartedMs,
+            activeJobId = activeJobId
+        ))
+    }
 
 private fun restoreClockState() {
-    clockRunning = prefs.getBoolean("clockRunning", false)
-    clockPaused = prefs.getBoolean("clockPaused", false)
-    startedAt = prefs.getString("startedAt", "") ?: ""
-    segmentStartMs = prefs.getLong("segmentStartMs", 0L)
-    accumulatedMs = prefs.getLong("accumulatedMs", 0L)
-    activeJobId = prefs.getInt("activeJobId", -1)
-}
+        val s = Clock.read(prefs)
+        clockRunning = s.running
+        clockPaused = s.paused
+        startedAt = s.startedAt
+        segmentStartMs = s.segmentStartMs
+        accumulatedMs = s.accumulatedMs
+        pausedAccumMs = s.pausedAccumMs
+        pauseStartedMs = s.pauseStartedMs
+        activeJobId = s.activeJobId
+    }
 
-private fun elapsedMs(): Long {
-    if (!clockRunning) return 0L
-    if (clockPaused || segmentStartMs == 0L) return accumulatedMs
-    return accumulatedMs + (System.currentTimeMillis() - segmentStartMs)
-}
+private fun elapsedMs(): Long = Clock.elapsedMs(prefs)
 
 private fun startTicker() {
     if (tickerRunning) return
@@ -572,48 +578,40 @@ private fun startTicker() {
 private fun stopTicker() { tickerRunning = false; mainHandler.removeCallbacksAndMessages(null) }
 
 private fun onHaloTap() {
-    when {
-        !clockRunning -> {
-            // Pick the active job first (stays until the user changes it), then start.
-            val site = activeSite()
-            if (site == null) {
-                showJobPicker("Which job are you working on?") { s ->
-                    activeJobId = s.id
-                    persistClock()
-                    startClockFromIdle()
+        when {
+            !clockRunning -> {
+                // Pick the active job first (stays until the user changes it), then start.
+                val site = activeSite()
+                if (site == null) {
+                    showJobPicker("Which job are you working on?") { s ->
+                        activeJobId = s.id
+                        persistClock()
+                        startClockFromIdle()
+                    }
+                    return
                 }
-                return
+                startClockFromIdle()
             }
-            startClockFromIdle()
+            clockPaused -> Clock.resume(prefs)
+            else -> Clock.pause(prefs)
         }
-        clockPaused -> {
-            // resume
-            clockPaused = false
-            segmentStartMs = System.currentTimeMillis()
+        if (clockRunning) {
+            // Clock.pause/resume wrote the posted values; mirror them back into the
+            // fields the ticker renders from.
+            restoreClockState()
         }
-        else -> {
-            // pause
-            accumulatedMs = elapsedMs()
-            segmentStartMs = 0L
-            clockPaused = true
-        }
+        syncTimerNotification()
+        renderAll()
     }
-    persistClock()
-    syncTimerNotification()
-    renderAll()
-}
 
 // Start the clock from idle, then persist/notify/render. Used both by the
 // direct halo tap and the picker callback (which returns early from onHaloTap).
 private fun startClockFromIdle() {
-    startedAt = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-    clockRunning = true; clockPaused = false
-    accumulatedMs = 0L
-    segmentStartMs = System.currentTimeMillis()
-    persistClock()
-    syncTimerNotification()
-    renderAll()
-}
+        Clock.start(prefs, activeJobId)
+        restoreClockState()
+        syncTimerNotification()
+        renderAll()
+    }
 
 // Stop the timer and book the session to the active job (no job picker).
 private fun stopToActiveJob() {
@@ -630,16 +628,25 @@ private fun setActiveJob(site: JobSite) {
 }
 
 private fun stopClock(jobSiteId: Int) {
-    clockRunning = false; clockPaused = false
-    val start = startedAt
-    val end = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-    val today = LocalDate.now().toString()
-    insertSession(WorkSession(id = 0, jobSiteId = jobSiteId, date = today, startTime = start, endTime = end, breakMinutes = 0, notes = "clock"))
-    startedAt = ""; segmentStartMs = 0L; accumulatedMs = 0L
-    persistClock()
-    stopTimerNotification()
-    renderAll()
-}
+        // Clock.stop hands back the reserved session: start, end and the paused
+        // minutes, which are booked as the task's break. Paused time used to be
+        // dropped entirely, so stopping after a pause claimed every paused minute
+        // as work even though the clock never counted it.
+        val booked = Clock.stop(prefs)
+        restoreClockState()
+        val today = LocalDate.now().toString()
+        insertSession(WorkSession(
+            id = 0,
+            jobSiteId = jobSiteId,
+            date = today,
+            startTime = booked.startedAt,
+            endTime = booked.endTime,
+            breakMinutes = booked.breakMinutes,
+            notes = "clock"
+        ))
+        stopTimerNotification()
+        renderAll()
+    }
 
 // ============ Timer status notification (foreground service) ============
 // Keeps an ongoing notification in the shade (running / paused + live elapsed)

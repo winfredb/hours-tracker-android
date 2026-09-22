@@ -78,8 +78,7 @@ class Widget3x1Provider : AppWidgetProvider() {
         const val CMD_START_APP = "com.example.hourstracker.CMD_START"
         const val CMD_TOGGLE_APP = "com.example.hourstracker.CMD_TOGGLE"
 
-        private fun prefs(context: Context): SharedPreferences =
-            context.getSharedPreferences("hours_tracker", Context.MODE_PRIVATE)
+        private fun prefs(context: Context): SharedPreferences = Clock.prefs(context)
 
         private fun resolveDark(context: Context): Boolean {
             val mode = prefs(context).getString("theme", "system") ?: "system"
@@ -100,44 +99,30 @@ class Widget3x1Provider : AppWidgetProvider() {
             return String.format(Locale.US, "%d:%02d", h, m)
         }
 
-        // ---- Timer state (mirrors MainActivity's persisted wall-clock keys) ----
-        private fun elapsedMs(p: SharedPreferences): Long {
-            if (!p.getBoolean("clockRunning", false)) return 0L
-            val paused = p.getBoolean("clockPaused", false)
-            val seg = p.getLong("segmentStartMs", 0L)
-            val acc = p.getLong("accumulatedMs", 0L)
-            return if (paused || seg == 0L) acc else acc + (System.currentTimeMillis() - seg)
+        /** "HH:MM" as stored -> seconds since midnight; null when unparseable. */
+        private fun timeOfDay(t: String?): Int? = try {
+            LocalTime.parse(t!!.trim()).toSecondOfDay()
+        } catch (t2: Throwable) {
+            null
         }
 
+        // ---- Timer state: owned by Clock, shared with MainActivity/TimerService ----
         private fun toggleTimer(context: Context) {
             val p = prefs(context)
-            val running = p.getBoolean("clockRunning", false)
-            val paused = p.getBoolean("clockPaused", false)
-            val e = p.edit()
-            if (!running) {
+            val s = Clock.read(p)
+            if (!s.running) {
                 // Start. Only allowed if an active (working-on) job is set; the
                 // widget can't show a picker, so hand off to the app to choose.
-                if (p.getInt("activeJobId", -1) < 1) {
-                    e.apply()
+                if (s.activeJobId < 1) {
                     startFromApp(context)
                     return
                 }
-                e.putString("startedAt", LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")))
-                e.putBoolean("clockRunning", true)
-                e.putBoolean("clockPaused", false)
-                e.putLong("accumulatedMs", 0L)
-                e.putLong("segmentStartMs", System.currentTimeMillis())
-            } else if (paused) {
-                // Resume
-                e.putBoolean("clockPaused", false)
-                e.putLong("segmentStartMs", System.currentTimeMillis())
+                Clock.start(p, s.activeJobId)
+            } else if (s.paused) {
+                Clock.resume(p)
             } else {
-                // Pause
-                e.putLong("accumulatedMs", elapsedMs(p))
-                e.putLong("segmentStartMs", 0L)
-                e.putBoolean("clockPaused", true)
+                Clock.pause(p)
             }
-            e.apply()
             // Keep the status notification in step with the widget's own action
             // (running/paused -> show, stopped -> hide) without opening the app.
             syncTimerService(context)
@@ -166,32 +151,27 @@ class Widget3x1Provider : AppWidgetProvider() {
         private fun stopFromWidget(context: Context) {
             // Book the session directly to the active job (no app launch).
             val p = prefs(context)
-            if (!p.getBoolean("clockRunning", false)) return
-            val jobId = p.getInt("activeJobId", -1)
+            val s = Clock.read(p)
+            if (!s.running) return
+            val jobId = s.activeJobId
             if (jobId < 1) return
-            val start = p.getString("startedAt", "") ?: ""
-            val end = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-            val date = LocalDate.now().toString()
+            // Same reservation the app makes: start -> now, paused minutes as the
+            // break. Really stop the clock first so a failed insert can't leave a
+            // running clock behind a widget that says stopped.
+            val booked = Clock.stop(p)
+            if (booked.startedAt.isBlank()) return
             try {
                 val db = HoursDb(context)
                 val cv = android.content.ContentValues()
                 cv.put("job_site_id", jobId)
-                cv.put("date", date)
-                cv.put("start_time", start)
-                cv.put("end_time", end)
-                cv.put("break_minutes", 0)
+                cv.put("date", LocalDate.now().toString())
+                cv.put("start_time", booked.startedAt)
+                cv.put("end_time", booked.endTime)
+                cv.put("break_minutes", booked.breakMinutes)
                 cv.put("notes", "clock")
                 db.writableDatabase.insert("work_sessions", null, cv)
                 db.close()
             } catch (t: Throwable) { }
-            // Reset the clock state.
-            p.edit()
-                .putBoolean("clockRunning", false)
-                .putBoolean("clockPaused", false)
-                .putString("startedAt", "")
-                .putLong("segmentStartMs", 0L)
-                .putLong("accumulatedMs", 0L)
-                .apply()
             syncTimerService(context)
         }
 
@@ -224,15 +204,18 @@ class Widget3x1Provider : AppWidgetProvider() {
                 arrayOf(today)
             ).use { c ->
                 while (c.moveToNext()) {
-                    val sm = LocalTime.parse(c.getString(c.getColumnIndexOrThrow("start_time"))).toSecondOfDay()
-                    val em = LocalTime.parse(c.getString(c.getColumnIndexOrThrow("end_time"))).toSecondOfDay()
+                    // Skip rows we can't read rather than throwing: one junk row
+                    // (older builds could store a blank time) must not blank out
+                    // the whole widget via build()'s fallback.
+                    val sm = timeOfDay(c.getString(c.getColumnIndexOrThrow("start_time"))) ?: continue
+                    val em = timeOfDay(c.getString(c.getColumnIndexOrThrow("end_time"))) ?: continue
                     var diff = em - sm
                     if (diff < 0) diff += 24 * 3600
-                    minutesToday += diff / 60 - c.getInt(c.getColumnIndexOrThrow("break_minutes")).coerceAtLeast(0)
+                    minutesToday += (diff / 60 - c.getInt(c.getColumnIndexOrThrow("break_minutes")).coerceAtLeast(0)).coerceAtLeast(0)
                 }
             }
             db.close()
-            minutesToday += (elapsedMs(p) / 60000).toInt()
+            minutesToday += (Clock.elapsedMs(p) / 60000).toInt().coerceAtLeast(0)
 
             val running = p.getBoolean("clockRunning", false)
             val paused = p.getBoolean("clockPaused", false)
