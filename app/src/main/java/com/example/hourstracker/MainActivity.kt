@@ -492,7 +492,7 @@ class MainActivity : Activity() {
         val site = jobSites.find { it.id == id }
         val removed = sessionsFor(id).size
         // Remove this project's exported workbook along with the project.
-        site?.let { deleteDownload("Tasks", workbookName(it.name)) }
+        site?.let { deleteDownload("Tasks", ProjectWorkbook.name(it.name)) }
         db.writableDatabase.delete("work_sessions", "job_site_id=?", arrayOf(id.toString()))
         db.writableDatabase.delete("job_sites", "id=?", arrayOf(id.toString()))
         // Don't leave the clock pointed at a project that no longer exists.
@@ -1924,68 +1924,23 @@ private fun stopTimerNotification() {
      * under Downloads reliably under scoped storage; falls back to plain File
      * IO on older versions. Returns a human-friendly display path.
      */
-    private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): Pair<String, Uri?> {
-        val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}".trimEnd('/') + "/"
-        val dirName = if (subdir.isBlank()) "HoursTracker" else "$subdir"
-        if (Build.VERSION.SDK_INT >= 29) {
-            // Reuse the existing entry when present so repeated writes overwrite the
-            // same file instead of MediaStore creating "Name (1).xlsx" copies.
-            val existing = contentResolver.query(
-                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                arrayOf(MediaStore.Downloads._ID),
-                "${MediaStore.Downloads.DISPLAY_NAME}=? AND ${MediaStore.Downloads.RELATIVE_PATH}=?",
-                arrayOf(filename, relFolder), null
-            )?.use { c -> if (c.moveToFirst()) c.getLong(0) else null }
-            val uri: Uri
-            if (existing != null) {
-                uri = android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, existing)
-                contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
-                    ?: error("Could not open output stream")
-            } else {
-                val cv = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, filename)
-                    put(MediaStore.Downloads.RELATIVE_PATH, relFolder)
-                    put(MediaStore.Downloads.IS_PENDING, 1)
-                }
-                uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
-                    ?: error("Could not create file entry")
-                try {
-                    contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                        ?: error("Could not open output stream")
-                    cv.clear()
-                    cv.put(MediaStore.Downloads.IS_PENDING, 0)
-                    contentResolver.update(uri, cv, null, null)
-                } catch (e: Exception) {
-                    contentResolver.delete(uri, null, null)
-                    throw e
-                }
-            }
-            val pathPart = (if (dirName.isBlank()) "" else "$dirName/") + filename
-            return "Downloads/$pathPart" to uri
-        } else {
-            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HoursTracker")
-            val sub = if (subdir.isBlank()) dir else File(dir, subdir)
-            sub.mkdirs()
-            File(sub, filename).writeBytes(bytes)
-            return "Downloads/${if (dirName.isBlank()) "" else "$dirName/"}${filename}" to Uri.fromFile(File(sub, filename))
-        }
-    }
+    private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): Pair<String, Uri?> =
+        ProjectWorkbook.write(this, subdir, filename, bytes)
 
     /** Removes a previously exported file from Downloads/HoursTracker/<subdir>/<filename>. */
-    private fun deleteDownload(subdir: String, filename: String) {
-        try {
-            val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}"
-            if (Build.VERSION.SDK_INT >= 29) {
-                val sel = "${MediaStore.Downloads.DISPLAY_NAME}=? AND ${MediaStore.Downloads.RELATIVE_PATH}=?"
-                contentResolver.delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI, sel, arrayOf(filename, relFolder))
-            } else {
-                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HoursTracker")
-                val sub = if (subdir.isBlank()) dir else File(dir, subdir)
-                File(sub, filename).delete()
-            }
-        } catch (e: Exception) {
-            // Non-fatal: the file may not exist or the OS may block deletion.
-        }
+    private fun deleteDownload(subdir: String, filename: String) =
+        ProjectWorkbook.delete(this, subdir, filename)
+
+    /** Deletes MediaStore entries like "Name (1).xlsx" left by earlier duplicate inserts. */
+    private fun deleteDownloadCopies(subdir: String, canonicalName: String) =
+        ProjectWorkbook.deleteCopies(this, subdir, canonicalName)
+
+    /** Writes (or removes) only this project's exported workbook — not every project's. */
+    private fun exportSite(siteId: Int) {
+        // Delegated: the widget books sessions without opening the app and needs the
+        // same writer (and the same filename rules), so there is one copy of it in
+        // ProjectWorkbook. It reads the project's sessions from the DB itself.
+        ProjectWorkbook.exportSite(this, siteId)
     }
 
     /** Shares a generated file (e.g. exported PDF) via the system share sheet. */
@@ -2008,71 +1963,6 @@ private fun stopTimerNotification() {
             renderAll()
         }
     }
-
-    /** Filename for a project's exported workbook. One definition, because the
-     *  writer, the overwrite-cleanup and the project-delete all have to agree:
-     *  otherwise deleting a project stops removing its workbook. The old copies
-     *  replaced "\\" — two backslashes — so a name containing one backslash
-     *  never matched the file that was actually written. */
-    private fun workbookName(siteName: String): String =
-        siteName.replace("/", "-").replace("\\", "-").trim().ifBlank { "project" } + ".xlsx"
-
-    /** Writes (or removes) only this project's exported workbook — not every project's. */
-    private fun exportSite(siteId: Int) {
-        val site = jobSites.find { it.id == siteId } ?: return
-        val siteSessions = sessions.filter { it.jobSiteId == siteId }.sortedWith(compareBy({ it.date }, { it.startTime }))
-        val safeName = workbookName(site.name)
-        if (siteSessions.isEmpty()) {
-            // No tasks left for this project — remove its stale export.
-            deleteDownload("Tasks", safeName)
-        } else {
-            // Clear any "Name (1).xlsx" copies left behind before writing the canonical file.
-            deleteDownloadCopies("Tasks", safeName)
-            writeDownload("Tasks", safeName, buildXlsxSheets(listOf("Task" to buildRows(siteSessions))))
-        }
-    }
-
-    /** Deletes MediaStore entries like "Name (1).xlsx", "Name (2).xlsx" created by earlier duplicate inserts. */
-    private fun deleteDownloadCopies(subdir: String, canonicalName: String) {
-        if (Build.VERSION.SDK_INT < 29) return
-        try {
-            val relFolder = "Download/HoursTracker/${if (subdir.isBlank()) "" else "$subdir/"}"
-            val base = canonicalName.removeSuffix(".xlsx")
-            // The project name is literal data, so % and _ inside it must be escaped
-            // or LIKE treats them as wildcards ("Job_1" would also match "JobX1 (1).xlsx").
-            val literal = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            val pattern = "$literal (%).xlsx"
-            val sel = "${MediaStore.Downloads.DISPLAY_NAME} LIKE ? ESCAPE '\\' AND ${MediaStore.Downloads.RELATIVE_PATH}=?"
-            val ids = mutableListOf<Long>()
-            contentResolver.query(
-                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                arrayOf(MediaStore.Downloads._ID), sel, arrayOf(pattern, relFolder), null
-            )?.use { c -> while (c.moveToNext()) ids.add(c.getLong(0)) }
-            ids.forEach { id ->
-                contentResolver.delete(
-                    android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id), null, null)
-            }
-        } catch (e: Exception) {
-            // Non-fatal cleanup.
-        }
-    }
-
-    private fun buildRows(rows: List<WorkSession>): List<List<String>> {
-            val out = mutableListOf(listOf("Date", "Start", "End", "Break (min)", "Worked (min)", "Notes"))
-            rows.forEach { s ->
-                val worked = (durationMinutes(s.startTime, s.endTime) - clampedBreak(s)).coerceAtLeast(0)
-                out.add(listOf(isoDateDisplay(s.date), time12(s.startTime), time12(s.endTime), clampedBreak(s).toString(), worked.toString(), s.notes ?: ""))
-            }
-            return out
-        }
-
-        private fun durationMinutes(start: String, end: String): Int {
-            val sm = LocalTime.parse(start).toSecondOfDay()
-            val em = LocalTime.parse(end).toSecondOfDay()
-            var diff = em - sm
-            if (diff < 0) diff += 24 * 3600
-            return diff / 60
-        }
 
         private fun hhMm(totalMin: Int): String {
             val h = totalMin / 60
@@ -2160,10 +2050,13 @@ private fun stopTimerNotification() {
         }
 
         /**
-         * Builds the date-range xlsx + matching PDF and writes both to
-         * Downloads/HoursTracker/. Summary sheet = per-project totals with an
-         * hh:mm grand total; By Week sheet = each project's weekly hh:mm totals
-         * (weeks start Sunday) plus a per-week grand total row.
+         * Builds the date-range summary PDF and writes it to
+         * Downloads/HoursTracker/Export/. (Per-project .xlsx workbooks are written
+         * by ProjectWorkbook as tasks are saved; this range report is PDF-only —
+         * the old comment here promised an xlsx that was never written.)
+         * Summary page = per-project totals with an hh:mm grand total; By Week
+         * page = each project's weekly hh:mm totals (weeks start Sunday) plus a
+         * per-week grand total row.
          */
         private fun exportRange(from: String, to: String) {
             try {
@@ -2225,69 +2118,6 @@ private fun stopTimerNotification() {
         // ISO date string for the Sunday of the week containing the given ISO date.
         private fun sundayOf(isoDate: String): String =
                 LocalDate.parse(isoDate).with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.SUNDAY)).toString()
-
-        private fun buildXlsxSheets(sheets: List<Pair<String, List<List<String>>>>): ByteArray {
-            val bos = ByteArrayOutputStream()
-            ZipOutputStream(bos).use { zos ->
-                zos.putNextEntry(ZipEntry("[Content_Types].xml"))
-                val ct = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                    "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
-                    "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
-                    "<Default Extension=\"xml\" ContentType=\"application/xml\"/>")
-                sheets.indices.forEach { i ->
-                    ct.append("<Override PartName=\"/xl/worksheets/sheet${i + 1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>")
-                }
-                ct.append("<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/></Types>")
-                zos.write(ct.toString().toByteArray(Charsets.UTF_8))
-                zos.closeEntry()
-
-                zos.putNextEntry(ZipEntry("_rels/.rels"))
-                zos.write(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
-                    "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>" +
-                    "</Relationships>").toByteArray(Charsets.UTF_8))
-                zos.closeEntry()
-
-                zos.putNextEntry(ZipEntry("xl/workbook.xml"))
-                val wb = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                    "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>")
-                sheets.indices.forEach { i ->
-                    wb.append("<sheet name=\"").append(xmlEscape(sheets[i].first)).append("\" sheetId=\"${i + 1}\" r:id=\"rId${i + 1}\"/>")
-                }
-                wb.append("</sheets></workbook>")
-                zos.write(wb.toString().toByteArray(Charsets.UTF_8))
-                zos.closeEntry()
-
-                zos.putNextEntry(ZipEntry("xl/_rels/workbook.xml.rels"))
-                val wr = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">")
-                sheets.indices.forEach { i ->
-                    wr.append("<Relationship Id=\"rId${i + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet${i + 1}.xml\"/>")
-                }
-                wr.append("</Relationships>")
-                zos.write(wr.toString().toByteArray(Charsets.UTF_8))
-                zos.closeEntry()
-
-                sheets.forEachIndexed { si, (_, rows) ->
-                    zos.putNextEntry(ZipEntry("xl/worksheets/sheet${si + 1}.xml"))
-                    val sb = StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-                        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>")
-                    rows.forEachIndexed { i, row ->
-                        val r = i + 1
-                        sb.append("<row r=\"$r\">")
-                        row.forEachIndexed { ci, cell ->
-                            val col = ('A'.code + ci).toChar()
-                            sb.append("<c r=\"$col$r\" t=\"inlineStr\"><is><t>").append(xmlEscape(cell)).append("</t></is></c>")
-                        }
-                        sb.append("</row>")
-                    }
-                    sb.append("</sheetData></worksheet>")
-                    zos.write(sb.toString().toByteArray(Charsets.UTF_8))
-                    zos.closeEntry()
-                }
-            }
-            return bos.toByteArray()
-        }
 
         /**
          * Renders the summary + weekly tables into a multi-page PDF via the native
@@ -2392,6 +2222,4 @@ private fun stopTimerNotification() {
             }
         }
 
-    private fun xmlEscape(s: String): String = s
-        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 }
