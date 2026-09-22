@@ -1926,7 +1926,7 @@ private fun stopTimerNotification() {
      * IO on older versions. Returns a human-friendly display path.
      */
     private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): Pair<String, Uri?> =
-        ProjectWorkbook.write(this, subdir, filename, bytes)
+        ExportFile.write(this, subdir, filename, bytes)
 
     /** Shares a generated file (e.g. exported PDF) via the system share sheet. */
     private fun shareFile(filename: String, uri: Uri?) {
