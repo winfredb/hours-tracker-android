@@ -106,6 +106,7 @@ class MainActivity : Activity() {
         // Restore the running clock from persisted wall-clock state so the timer
         // keeps accruing even across process death / relaunch.
         restoreClockState()
+        repairJunkSessions()
         refreshData()
         buildLayout()
         startTicker()
@@ -315,6 +316,21 @@ class MainActivity : Activity() {
         sessions = querySessions()
     }
 
+    // One-time repair for rows older builds could write with a blank start/end
+    // (they crashed every screen that totalled them). Two columns must hold
+    // exactly "HH:MM"; anything else is unreadable noise, so drop it.
+    private fun repairJunkSessions() {
+        try {
+            db.writableDatabase.delete(
+                "work_sessions",
+                "start_time NOT LIKE '__:__' OR end_time NOT LIKE '__:__' OR date NOT LIKE '____-__-__'",
+                null
+            )
+        } catch (e: Exception) {
+            // Non-fatal: worst case the tolerant readers above keep the app usable.
+        }
+    }
+
     private fun querySites(): MutableList<JobSite> {
         val out = mutableListOf<JobSite>()
         db.readableDatabase.rawQuery("SELECT * FROM job_sites ORDER BY name", null).use { c ->
@@ -461,6 +477,7 @@ class MainActivity : Activity() {
     }
 
     private fun insertSession(session: WorkSession) {
+        if (!isBookable(session)) return
         val cv = android.content.ContentValues()
         cv.put("job_site_id", session.jobSiteId)
         cv.put("date", session.date)
@@ -479,6 +496,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateSession(session: WorkSession) {
+        if (!isBookable(session)) return
         android.content.ContentValues().apply {
             put("job_site_id", session.jobSiteId)
             put("date", session.date)
@@ -1707,16 +1725,31 @@ private fun stopTimerNotification() {
         addField("Break", brk)
         form.addView(projLbl)
 
-        AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+        // Validate BEFORE closing: an untouched Start/End field used to be saved as
+        // the empty string, which crashed the next render in LocalTime.parse.
+        // Keep the dialog open and point at the field that needs attention.
+        val dlg = AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
             .setTitle(title)
             .setView(form)
-            .setPositiveButton(confirmLabel) { _, _ ->
-                val rid = jobSites.getOrNull(selectedIdx)?.id ?: 1
-                onSave(date.text.toString(), time24(start.text.toString()), time24(end.text.toString()),
-                    brk.text.toString().toIntOrNull() ?: 0, rid)
-            }
+            .setPositiveButton(confirmLabel, null)
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val s24 = time24(start.text.toString())
+                val e24 = time24(end.text.toString())
+                val sBad = s24.isBlank()
+                val eBad = e24.isBlank()
+                start.error = if (sBad) "Pick a start time" else null
+                end.error = if (eBad) "Pick an end time" else null
+                if (sBad || eBad) return@setOnClickListener
+                val rid = jobSites.getOrNull(selectedIdx)?.id ?: 1
+                val brkMin = (brk.text.toString().toIntOrNull() ?: 0).coerceAtLeast(0)
+                dlg.dismiss()
+                onSave(date.text.toString(), s24, e24, brkMin, rid)
+            }
+        }
+        dlg.show()
     }
 
     private fun fieldColumn(vararg fields: View): View {
@@ -1730,12 +1763,46 @@ private fun stopTimerNotification() {
 
     // ==================== HELPERS ====================
 
+    // Minutes worked for one task. Tolerates junk rows written by older builds
+    // (a blank start/end used to be storable) so one bad row can't take down
+    // every screen that totals sessions.
     private fun workedMinutes(s: WorkSession): Int {
-        val sm = LocalTime.parse(s.startTime).toSecondOfDay()
-        val em = LocalTime.parse(s.endTime).toSecondOfDay()
+        val sm = parseTimeOfDay(s.startTime) ?: return 0
+        val em = parseTimeOfDay(s.endTime) ?: return 0
         var diff = em - sm
         if (diff < 0) diff += 24 * 3600
-        return diff / 60 - s.breakMinutes
+        return ((diff / 60) - s.breakMinutes.coerceAtLeast(0)).coerceAtLeast(0)
+    }
+
+    /** "HH:MM" (24h, as stored) -> seconds since midnight; null when unparseable. */
+    private fun parseTimeOfDay(t: String): Int? = try {
+        LocalTime.parse(t.trim()).toSecondOfDay()
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun parseIsoDate(d: String): LocalDate? = try {
+        LocalDate.parse(d.trim())
+    } catch (e: Exception) {
+        null
+    }
+
+    // Nothing reaches the DB without a project, a parseable date and both times.
+    // A blank start/end was storable before this guard and crashed every screen
+    // that totalled sessions, so the check lives at the write path as well as in
+    // the dialog that produces it.
+    private fun isBookable(s: WorkSession): Boolean {
+        val why = when {
+            s.jobSiteId < 1 -> "Pick a project first"
+            parseIsoDate(s.date) == null -> "Pick a valid date"
+            parseTimeOfDay(s.startTime) == null -> "Start time is required"
+            parseTimeOfDay(s.endTime) == null -> "End time is required"
+            else -> null
+        }
+        if (why == null) return true
+        statusMessage = "Not saved: $why"
+        renderAll()
+        return false
     }
 
     private fun formatMinutesShort(total: Int): String {
