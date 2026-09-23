@@ -1413,56 +1413,110 @@ private fun stopTimerNotification() {
     }
 
     private fun buildDrawer(): View {
-        // Panel background = the app background, so the menu cards stand out against it.
-        val frame = FrameLayout(this).apply { setBackgroundColor(bgColor) }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(24), dp(20), dp(24)) }
+        // Panel surface = the elevated card tone, so the menu pills read as
+        // M3-style tonal items sitting on a flat drawer.
+        val frame = FrameLayout(this).apply { setBackgroundColor(surfaceContainerColor) }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(22), dp(14), dp(20)) }
         frame.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // ---- hamburger menu: one card per item (Projects / Tasks / Settings / Export) ----
-        // Each item mirrors the home cards: a left accent rail, a bold title and a
-        // quiet subtitle. Selecting one closes the drawer and opens that section.
-        fun menuCard(name: String, sub: String, onClick: () -> Unit) {
+        // ---- header: logo chip + app title ----
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        head.addView(TextView(this).apply {
+            text = "H"
+            textSize = 16f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            background = rounded(primaryColor, 11)
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(dp(36), dp(36)))
+        head.addView(TextView(this).apply {
+            text = "Hours Tracker"
+            textSize = 16f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = dp(12)
+        })
+        col.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(6)
+        })
+
+        // ---- section label ----
+        fun sectionLabel(label: String) {
+            col.addView(TextView(this).apply {
+                text = label.uppercase()
+                textSize = 10f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(onSurfaceColor)
+                alpha = 0.45f
+                letterSpacing = 0.12f
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(14); bottomMargin = dp(4)
+            })
+        }
+
+        // ---- menu pill: icon chip + title + subtitle; active tab = tonal fill ----
+        // Active state mirrors the M3 nav-drawer "selected" container: a filled tonal pill,
+        // solid primary icon chip, and on-primary-container text. Inactive items stay subtle.
+        fun menuItem(name: String, sub: String, iconGlyph: String, active: Boolean, onClick: () -> Unit) {
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 0, dp(4), 0)
-                background = card()
-                setMinimumHeight(dp(64))
+                setPadding(dp(10), dp(8), dp(12), dp(8))
+                background = if (active) rounded(primaryContainerColor, 16) else null
                 isClickable = true
                 setOnClickListener { onClick() }
             }
-            item.addView(View(this).apply { background = rounded(primaryColor, 4) },
-                LinearLayout.LayoutParams(dp(5), ViewGroup.LayoutParams.MATCH_PARENT))
+            item.addView(TextView(this).apply {
+                text = iconGlyph
+                textSize = 14f
+                setTypeface(null, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                if (active) {
+                    background = rounded(primaryColor, 10)
+                    setTextColor(0xFFFFFFFF.toInt())
+                } else {
+                    background = rounded(surfaceVariantColor, 10)
+                    setTextColor(onSurfaceVariantColor)
+                }
+            }, LinearLayout.LayoutParams(dp(36), dp(36)))
             val txt = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(16), dp(12), dp(8), dp(12))
             }
             txt.addView(TextView(this).apply {
-                text = name; textSize = 20f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor)
+                text = name; textSize = 14f; setTypeface(null, Typeface.BOLD)
+                setTextColor(if (active) onPrimaryContainerColor else onSurfaceColor)
             })
             txt.addView(TextView(this).apply {
-                text = sub; textSize = 12f; setTextColor(onSurfaceVariantColor)
+                text = sub; textSize = 11f
+                setTextColor(if (active) onPrimaryContainerColor else onSurfaceVariantColor)
+                alpha = if (active) 0.85f else 1f
             })
-            item.addView(txt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            col.addView(item, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                // Explicit LayoutParams: setMargins() no-ops on a view that hasn't been
-                // attached with layout params yet.
-                bottomMargin = dp(12)
+            item.addView(txt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = dp(14)
+            })
+            col.addView(item, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(6)
             })
         }
-        menuCard("Projects", "Job sites & rates") { drawerTab = 0; navScreen = 1; filteredSiteId = null; closeDrawer(); renderAll() }
-        menuCard("Tasks", "Recorded sessions") { drawerTab = 1; navScreen = 2; filteredSiteId = null; closeDrawer(); renderAll() }
-        menuCard("Settings", "Overtime, pay period, theme") { drawerTab = 2; navScreen = 3; filteredSiteId = null; closeDrawer(); renderAll() }
-        menuCard("Export", "Download a summary PDF") { closeDrawer(); showExportRange() }
+
+        sectionLabel("Work")
+        menuItem("Projects", "Job sites & rates", "◆", drawerTab == 0) { drawerTab = 0; navScreen = 1; filteredSiteId = null; closeDrawer(); renderAll() }
+        menuItem("Tasks", "Recorded sessions", "◷", drawerTab == 1) { drawerTab = 1; navScreen = 2; filteredSiteId = null; closeDrawer(); renderAll() }
+        sectionLabel("System")
+        menuItem("Settings", "Overtime, pay period", "⚙", drawerTab == 2) { drawerTab = 2; navScreen = 3; filteredSiteId = null; closeDrawer(); renderAll() }
+        menuItem("Export", "Download a summary PDF", "⇩", false) { closeDrawer(); showExportRange() }
 
         // Spacer pushes the credit line to the bottom of the (full-height) menu.
         col.addView(View(this).apply {}, LinearLayout.LayoutParams(1, 0).apply { weight = 1f })
 
         val footer = TextView(this).apply {
             text = "vibe coded by pooh"; textSize = 11f; setTextColor(onSurfaceVariantColor)
-            setPadding(0, dp(8), 0, 0)
+            setPadding(dp(6), dp(8), 0, 0)
         }
         col.addView(footer)
         return frame
