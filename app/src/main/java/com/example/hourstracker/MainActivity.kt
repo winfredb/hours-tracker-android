@@ -97,6 +97,12 @@ class MainActivity : Activity() {
     private var labelView: TextView? = null
     private var stopBtnView: View? = null
     private var activeJobView: TextView? = null
+    // Report card handles so updateClockViews() can repaint live totals while the
+    // timer runs (week / pay period hours + pay).
+    private var weekTotalsView: TextView? = null
+    private var weekPayView: TextView? = null
+    private var periodTotalsView: TextView? = null
+    private var periodPayView: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -470,8 +476,9 @@ class MainActivity : Activity() {
     // Compute overtime + pay across all jobs for any inclusive [from, to] ISO range.
     // Overtime is applied per calendar week (weeks start Sunday) using the global
     // weekly threshold; each job's hours are priced at that job's own wage.
-    private fun rangeSummary(from: String, to: String): Quad {
-        val inRange = sessions.filter { it.date >= from && it.date <= to }
+    private fun rangeSummary(from: String, to: String, extra: List<WorkSession> = emptyList()): Quad {
+        val saved = sessions.filter { it.date >= from && it.date <= to }
+        val inRange = saved + extra.filter { it.date >= from && it.date <= to }
         val totalMin = inRange.sumOf { workedMinutes(it) }
         val thresholdSec = (overtimeThresholdHours * 60).toInt()
         var otMin = 0
@@ -506,6 +513,41 @@ class MainActivity : Activity() {
 
     // Simple 4-value holder (keeps rangeSummary readable).
     private data class Quad(val totalMin: Int, val otMin: Int, val basePay: Double, val otPay: Double)
+
+    /**
+     * Range totals including the currently-running timer's in-progress minutes.
+     * The running session isn't in the DB until it's stopped, so it's materialised
+     * as a synthetic session and folded through the same per-week overtime math as
+     * saved sessions — so the live portion earns OT too (once the week breaches
+     * the threshold) and is priced at the active job's wage. Used to repaint the
+     * home report cards as the clock ticks.
+     */
+    private fun liveRangeSummary(from: String, to: String): Pair<Int, Double> {
+        val live = buildList {
+            if (clockRunning && activeJobId >= 0) {
+                val today = LocalDate.now().toString()
+                if (today >= from && today <= to) {
+                    val liveMin = (elapsedMs() / 60_000).toInt()
+                    if (liveMin > 0) add(makeLiveSession(activeJobId, today, liveMin))
+                }
+            }
+        }
+        val q = rangeSummary(from, to, live)
+        return q.totalMin to (q.basePay + q.otPay)
+    }
+
+    // A bare-bones session whose workedMinutes() (00:00 → liveMin minutes, no
+    // break) equals the timer's current elapsed minutes, for the active job today.
+    private fun makeLiveSession(jobId: Int, date: String, minutes: Int): WorkSession {
+        val endSec = (minutes * 60) % (24 * 3600)
+        return WorkSession(
+            jobSiteId = jobId,
+            date = date,
+            startTime = "00:00",
+            endTime = String.format(Locale.US, "%02d:%02d", endSec / 3600, (endSec % 3600) / 60),
+            breakMinutes = 0
+        )
+    }
 
     /** Tasks belonging to a project. Used by the delete confirmation and cleanup. */
     private fun sessionsFor(id: Int): List<WorkSession> = sessions.filter { it.jobSiteId == id }
@@ -1013,6 +1055,23 @@ private fun stopTimerNotification() {
             tv.text = formatElapsedMs(elapsedMs())
             tv.setTextColor(if (clockPaused) onSurfaceVariantColor else onSurfaceColor)
         }
+        // Repaint the home report totals to include the live in-progress time.
+        if (navScreen == 0) updateReportViews()
+    }
+
+    // Refresh "This week" and "This pay period" card figures with live minutes.
+    private fun updateReportViews() {
+        if (weekTotalsView != null || weekPayView != null) {
+            val sunday = sundayOf(LocalDate.now().toString())
+            val (tm, p) = liveRangeSummary(sunday, LocalDate.parse(sunday).plusDays(6).toString())
+            weekTotalsView?.text = formatMinutesShort(tm)
+            weekPayView?.text = "$${String.format(Locale.US, "%.2f", p)}"
+        }
+        if (periodTotalsView != null || periodPayView != null) {
+            val (tm, p) = liveRangeSummary(payPeriodStart, payPeriodEnd)
+            periodTotalsView?.text = formatMinutesShort(tm)
+            periodPayView?.text = "$${String.format(Locale.US, "%.2f", p)}"
+        }
     }
 
     private fun dotView(color: Int, radius: Int): View = View(this).apply {
@@ -1171,7 +1230,7 @@ private fun stopTimerNotification() {
         // pay sits underneath. The card body is neutral (same surface as task cards)
         // so the only colour is the accent rail — it can't clash with the start button,
         // which shifts green → gold → orange as the clock runs.
-        private fun buildSummaryCard(title: String, from: String, to: String, onOpen: (() -> Unit)? = null): View {
+        private fun buildSummaryCard(title: String, from: String, to: String, onOpen: (() -> Unit)? = null, kind: Int = 0): View {
             val s = rangeSummary(from, to)
             val totalPay = s.basePay + s.otPay
 
@@ -1210,10 +1269,14 @@ private fun stopTimerNotification() {
             valCol.addView(TextView(this).apply {
                 text = formatMinutesShort(s.totalMin); textSize = 20f
                 setTypeface(null, Typeface.BOLD); setTextColor(primaryColor); gravity = Gravity.END
+                if (kind == 1) weekTotalsView = this
+                else if (kind == 2) periodTotalsView = this
             })
             valCol.addView(TextView(this).apply {
                 text = "$${String.format(Locale.US, "%.2f", totalPay)}"
                 textSize = 12f; setTextColor(onSurfaceVariantColor); gravity = Gravity.END
+                if (kind == 1) weekPayView = this
+                else if (kind == 2) periodPayView = this
             })
             card.addView(valCol, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             return card
@@ -1223,12 +1286,12 @@ private fun stopTimerNotification() {
     private fun buildWeeklySummaryCard(): View {
         val sunday = sundayOf(LocalDate.now().toString())
         val saturday = LocalDate.parse(sunday).plusDays(6).toString()
-        return buildSummaryCard("This week", sunday, saturday) { navScreen = 4; renderAll() }
+        return buildSummaryCard("This week", sunday, saturday, { navScreen = 4; renderAll() }, kind = 1)
     }
 
     // Home-screen card: the pay period range picked in Settings → Pay period.
     private fun buildPayPeriodCard(): View =
-        buildSummaryCard("This pay period", payPeriodStart, payPeriodEnd) { navScreen = 5; renderAll() }
+        buildSummaryCard("This pay period", payPeriodStart, payPeriodEnd, { navScreen = 5; renderAll() }, kind = 2)
 
     // Tasks tab content: optional project filter header + total header + session cards.
     private fun buildTasksTab(): View {
