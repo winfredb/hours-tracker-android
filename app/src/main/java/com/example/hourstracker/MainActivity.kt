@@ -2109,10 +2109,13 @@ private fun stopTimerNotification() {
             renderAll()
             return
         }
+        // On API 26-28 ExportFile returns a file:// Uri; route it through the
+        // content provider so ACTION_SEND doesn't throw FileUriExposedException.
+        val stream = ProjectFileProvider.shareUri(this, uri)
         try {
             val send = Intent(Intent.ACTION_SEND).apply {
                 type = "application/pdf"
-                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_STREAM, stream)
                 putExtra(Intent.EXTRA_SUBJECT, filename)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
@@ -2274,15 +2277,15 @@ private fun stopTimerNotification() {
         // ==================== DATE-RANGE EXPORT ====================
 
         private fun showExportRange() {
-            // Each preset resolves its [from, to] range and exports it; the
-            // picker-based options open a dialog first. Lambdas are typed
-            // () -> Unit, so the range must be consumed here explicitly.
+            // Top-level Export menu: save presets, plus a separate Share PDF…
+            // entry that reuses the same presets but opens the share sheet.
             val opts = listOf(
-                "This week" to { rangeForPreset("thisweek").let { exportRange(it.first, it.second) } },
-                "Last week" to { rangeForPreset("lastweek").let { exportRange(it.first, it.second) } },
-                "2 weeks from date…" to { showTwoWeekFromDatePicker() },
-                "All time" to { rangeForPreset("all").let { exportRange(it.first, it.second) } },
-                "Custom range…" to { showCustomRangePicker() }
+                "This week" to { presetRange("thisweek", false) },
+                "Last week" to { presetRange("lastweek", false) },
+                "2 weeks from date…" to { showTwoWeekFromDatePicker(false) },
+                "All time" to { presetRange("all", false) },
+                "Custom range…" to { showCustomRangePicker(false) },
+                "Share PDF…" to { showExportRangeDialog(share = true) }
             )
             AlertDialog.Builder(this, pickerDialogThemeId())
                 .setTitle("Export")
@@ -2291,6 +2294,32 @@ private fun stopTimerNotification() {
                 }
                 .setNegativeButton("Cancel", null)
                 .show()
+        }
+
+        private fun showExportRangeDialog(share: Boolean) {
+            // Each preset resolves its [from, to] range and exports it; the
+            // picker-based options open a dialog first. Lambdas are typed
+            // () -> Unit, so the range must be consumed here explicitly.
+            val opts = listOf(
+                "This week" to { presetRange("thisweek", share) },
+                "Last week" to { presetRange("lastweek", share) },
+                "2 weeks from date…" to { showTwoWeekFromDatePicker(share) },
+                "All time" to { presetRange("all", share) },
+                "Custom range…" to { showCustomRangePicker(share) }
+            )
+            AlertDialog.Builder(this, pickerDialogThemeId())
+                .setTitle(if (share) "Share PDF" else "Export")
+                .setItems(opts.map { it.first }.toTypedArray()) { _, which ->
+                    opts[which].second()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        // Run a named preset and either save (share=false) or share (share=true).
+        private fun presetRange(key: String, share: Boolean) {
+            val r = rangeForPreset(key)
+            exportRange(r.first, r.second, share)
         }
 
         // Inclusive [from, to] as ISO dates for the given display preset.
@@ -2319,7 +2348,7 @@ private fun stopTimerNotification() {
             }
         }
 
-        private fun showCustomRangePicker() {
+        private fun showCustomRangePicker(share: Boolean = false) {
             // Chain two DatePickerDialogs: pick start, then pick end, then export.
             val today = LocalDate.now()
             val pickEnd = { start: LocalDate ->
@@ -2329,7 +2358,7 @@ private fun stopTimerNotification() {
                         statusMessage = "End date can't be before start date"
                         renderAll()
                     } else {
-                        exportRange(start.toString(), end.toString())
+                        exportRange(start.toString(), end.toString(), share)
                     }
                 }, today.year, today.monthValue - 1, today.dayOfMonth).show()
             }
@@ -2339,15 +2368,15 @@ private fun stopTimerNotification() {
         }
 
         // Export 2 weeks (14 days) starting on a calendar-picked date.
-        private fun showTwoWeekFromDatePicker() {
+        private fun showTwoWeekFromDatePicker(share: Boolean = false) {
             val today = LocalDate.now()
             DatePickerDialog(this, pickerDialogThemeId(), { _, y, mo, d ->
-                showTwoWeekRange(LocalDate.of(y, mo + 1, d))
+                showTwoWeekRange(LocalDate.of(y, mo + 1, d), share)
             }, today.year, today.monthValue - 1, today.dayOfMonth).show()
         }
 
-        private fun showTwoWeekRange(start: LocalDate) {
-            exportRange(start.toString(), start.plusDays(13).toString())
+        private fun showTwoWeekRange(start: LocalDate, share: Boolean = false) {
+            exportRange(start.toString(), start.plusDays(13).toString(), share)
         }
 
         /**
@@ -2359,7 +2388,7 @@ private fun stopTimerNotification() {
          * page = each project's weekly hh:mm totals (weeks start Sunday) plus a
          * per-week grand total row.
          */
-        private fun exportRange(from: String, to: String) {
+        private fun exportRange(from: String, to: String, share: Boolean = false) {
             try {
                 val inRange = sessions.filter { it.date >= from && it.date <= to }
                 if (inRange.isEmpty()) { statusMessage = "No tasks in range"; renderAll(); return }
@@ -2397,8 +2426,16 @@ private fun stopTimerNotification() {
 
                 val label = "${from}_to_${to}"
                 val (pdfPath, pdfUri) = writeDownload("Export", "Summary_$label.pdf", buildPdf(from, to, summaryRows, weekRows))
-                statusMessage = "Exported $from → $to (pdf) ✓"
                 val filename = "Summary_$label.pdf"
+                // Share mode: write the PDF (needed to get a Uri) then open the
+                // share sheet directly instead of the save confirmation dialog.
+                if (share) {
+                    statusMessage = "Preparing $from → $to for sharing…"
+                    shareFile(filename, pdfUri)
+                    renderAll()
+                    return
+                }
+                statusMessage = "Exported $from → $to (pdf) ✓"
                 AlertDialog.Builder(this, pickerDialogThemeId())
                     .setTitle("Export complete ✓")
                     .setMessage("Saved:\n• $pdfPath")

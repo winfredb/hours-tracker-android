@@ -59,5 +59,15 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- Native stand-in for FileProvider. exported=false + grantUriPermissions:
+             only explicitly-granted, temporary read access to files under the
+             Downloads/HoursTracker root, so ACTION_SEND sharing works on API
+             26-28 where ExportFile returns a file:// Uri. -->
+        <provider
+            android:name=".ProjectFileProvider"
+            android:authorities="com.example.hourstracker2.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
