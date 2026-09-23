@@ -123,7 +123,10 @@ class Widget3x1Provider : AppWidgetProvider() {
                 }
                 Clock.start(p, s.activeJobId)
             } else if (s.paused) {
-                Clock.resume(p)
+                // Resume needs the "Enter break time" dialog, which only the app
+                // can show. Launch it (still paused); it opens the dialog.
+                launchApp(context, CMD_TOGGLE_APP)
+                return
             } else {
                 Clock.pause(p)
             }
@@ -145,9 +148,11 @@ class Widget3x1Provider : AppWidgetProvider() {
             } catch (t: Throwable) { }
         }
 
-        private fun startFromApp(context: Context) {
+        private fun startFromApp(context: Context) = launchApp(context, CMD_START_APP)
+
+        private fun launchApp(context: Context, action: String) {
             val intent = Intent(context, MainActivity::class.java)
-                .setAction(CMD_START_APP)
+                .setAction(action)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             try { context.startActivity(intent) } catch (t: Throwable) { }
         }

@@ -125,15 +125,23 @@ object Clock {
         ))
     }
 
-    /** Close the open pause span (adding it to the break total) and run on. */
-    fun resume(p: SharedPreferences) {
+    /**
+     * Close the open pause span (adding it to the break total) and run on.
+     * When [pauseMinutes] is provided it overrides the wall-clock pause length
+     * for this span — used when the user edits the pause time on resume.
+     */
+    fun resume(p: SharedPreferences, pauseMinutes: Int? = null) {
         val s = read(p)
         if (!s.running || !s.paused) return
-        val extra = if (s.pauseStartedMs == 0L) 0L else System.currentTimeMillis() - s.pauseStartedMs
+        val extra = when {
+            pauseMinutes != null -> pauseMinutes * 60000L
+            s.pauseStartedMs == 0L -> 0L
+            else -> System.currentTimeMillis() - s.pauseStartedMs
+        }
         write(p, s.copy(
             paused = false,
             segmentStartMs = System.currentTimeMillis(),
-            pausedAccumMs = s.pausedAccumMs + extra,
+            pausedAccumMs = s.pausedAccumMs + extra.coerceAtLeast(0),
             pauseStartedMs = 0L
         ))
     }

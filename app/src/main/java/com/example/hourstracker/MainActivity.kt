@@ -156,6 +156,16 @@ class MainActivity : Activity() {
         }
     }
 
+    // A widget resume (CMD_TOGGLE) with FLAG_ACTIVITY_CLEAR_TOP lands here when the
+    // activity already exists — re-dispatch so the "Enter break time" dialog still
+    // appears instead of being swallowed.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent?.action == "com.example.hourstracker.CMD_TOGGLE") {
+            mainHandler.post { try { onHaloTap() } catch (t: Throwable) { } }
+        }
+    }
+
     private val notificationPermissionCode = 901
     // Android 13+ (API 33, targetSdk 36): POST_NOTIFICATIONS is required before
     // any notification shows. Ask for it on launch; the timer status notification
@@ -701,7 +711,7 @@ private fun onHaloTap() {
                 }
                 startClockFromIdle()
             }
-            clockPaused -> Clock.resume(prefs)
+            clockPaused -> { resumeWithEditablePause(); return }
             else -> Clock.pause(prefs)
         }
         if (clockRunning) {
@@ -727,6 +737,43 @@ private fun stopToActiveJob() {
     val site = activeSite()
     if (site == null) { showJobPicker("Which job are you working on?") { s -> stopClock(s.id) }; return }
     stopClock(site.id)
+}
+
+// Resume from a pause, but first let the user edit how many minutes of this
+// pause count as break. Paused time is excluded from worked time and later
+// booked as the task's break, so an accidental long pause can be corrected by
+// overwriting the span's length before it's banked.
+private fun resumeWithEditablePause() {
+    val livePauseMs = if (pauseStartedMs != 0L) System.currentTimeMillis() - pauseStartedMs else 0L
+    val currentMin = (livePauseMs / 60_000L).toInt()
+    val inp = EditText(this).apply {
+        inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        setText("$currentMin")
+        setSelectAllOnFocus(true)
+    }
+    val wrap = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(20), dp(6), dp(20), 0)
+    }
+    wrap.addView(TextView(this).apply {
+        text = "Paused ${formatElapsedMs(livePauseMs)} so far. Enter the break time in minutes, then resume."
+        textSize = 13f; setTextColor(onSurfaceVariantColor)
+    })
+    wrap.addView(inp, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        topMargin = dp(14)
+    })
+    AlertDialog.Builder(this, pickerDialogThemeId())
+        .setTitle("Enter break time")
+        .setView(wrap)
+        .setNegativeButton("Cancel", null)
+        .setPositiveButton("Resume") { _, _ ->
+            val edited = (inp.text.toString().trim().toIntOrNull() ?: currentMin).coerceAtLeast(0)
+            Clock.resume(prefs, edited)
+            restoreClockState()
+            syncTimerNotification()
+            renderAll()
+        }
+        .show()
 }
 
 // Change the active job (the one you're working on); persists until changed.
