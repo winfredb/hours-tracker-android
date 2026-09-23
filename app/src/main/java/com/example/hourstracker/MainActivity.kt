@@ -92,10 +92,8 @@ class MainActivity : Activity() {
     // view handles for live clock update (avoid rebuilding whole screen every second)
     private var elapsedView: TextView? = null
     private var stateView: TextView? = null
-    private var glyphView: TextView? = null
     private var labelView: TextView? = null
-    private var haloButtonView: View? = null
-    private var haloGlowView: View? = null
+    private var stopBtnView: View? = null
     private var activeJobView: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -283,12 +281,6 @@ class MainActivity : Activity() {
             setColor(fill)
             setCornerRadius(dp(12).toFloat())
             setStroke(dp(1), outlineColor)
-        }
-    }
-
-    private fun ovalGradient(start: Int, end: Int): GradientDrawable {
-        return GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(start, end)).apply {
-            setShape(GradientDrawable.OVAL)
         }
     }
 
@@ -777,124 +769,203 @@ private fun stopTimerNotification() {
         builtStateSig = stateSig()
     }
 
-    // Home screen: clock halo + stop + add task + status.
+    // Home screen (Direction C: Modern Tonal Stack): header + hero card + summary cards.
     private fun buildHomeScreen(column: LinearLayout) {
-        // ---- clock section ----
-        val stateLbl = TextView(this).apply {
-            id = 1; textSize = 16f; gravity = Gravity.CENTER
+        val today = LocalDate.now()
+        val dayName = today.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+        val monthShort = today.month.name.lowercase().take(3).replaceFirstChar { it.uppercase() }
+
+        // ---- Header ----
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        header.addView(TextView(this).apply {
+            text = "$dayName · $monthShort ${today.dayOfMonth}".uppercase()
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            letterSpacing = 0.05f
+            setTextColor(primaryColor)
+        })
+        header.addView(TextView(this).apply {
+            text = "Hours Tracker"
+            textSize = 22f
+            setTypeface(null, Typeface.BOLD)
             setTextColor(onSurfaceColor)
-            setTypeface(null, Typeface.NORMAL)
+            setPadding(0, dp(2), 0, 0)
+        })
+        column.addView(header, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(16) })
+
+        // ---- Hero Card (Active Session & Controls) ----
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = card()
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+        }
+
+        // Status badge pill
+        val badge = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(primaryContainerColor, 8)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+        }
+        val dot = dotView(primaryColor, 6)
+        badge.addView(dot)
+        val stateLbl = TextView(this).apply {
+            textSize = 11f
+            setTypeface(null, Typeface.BOLD)
+            letterSpacing = 0.04f
+            setTextColor(onPrimaryContainerColor)
+            setPadding(dp(6), 0, 0, 0)
         }
         stateView = stateLbl
-        val lpCenter = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        column.addView(stateLbl, lpCenter)
+        badge.addView(stateLbl)
+        hero.addView(badge, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(10) })
 
-        // Active job indicator: shows the job you're working on, tap to change it.
+        // Active project / job title
         val jobLbl = TextView(this).apply {
-            textSize = 14f; gravity = Gravity.CENTER
-            setTextColor(onSurfaceVariantColor)
+            textSize = 15f
             setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor)
             setOnClickListener { showJobPicker("Which job are you working on?") { s -> setActiveJob(s) } }
         }
         activeJobView = jobLbl
-        column.addView(jobLbl, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+        hero.addView(jobLbl, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(2) })
 
-        val wrap = FrameLayout(this)
-        wrap.layoutParams = LinearLayout.LayoutParams(dp(176), dp(176)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(18) }
+        // Big elapsed clock display
+        val elapsed = TextView(this).apply {
+            textSize = 46f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor)
+            letterSpacing = -0.02f
+        }
+        elapsedView = elapsed
+        hero.addView(elapsed, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(14) })
 
-        val haloBack = GradientDrawable().apply { setShape(GradientDrawable.OVAL); setColor(0x24FF6D00) }
-        val halo = View(this).apply { background = haloBack }
-        haloGlowView = halo
-        wrap.addView(halo, FrameLayout.LayoutParams(dp(176), dp(176), Gravity.CENTER))
+        // Action controls inside hero card: [Pause / Start / Resume] [Stop] [＋ Add Task]
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
 
-        val inner = FrameLayout(this).apply {
-            background = ovalGradient(0xFF4CAF50.toInt(), 0xFF2E7D32.toInt())
+        val pauseBtn = TextView(this).apply {
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = rounded(primaryColor, 23)
             isClickable = true
             setOnClickListener { onHaloTap() }
         }
-        haloButtonView = inner
-        val innerCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-        val glyph = TextView(this).apply { textSize = 40f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
-        val label = TextView(this).apply { textSize = 18f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER }
-        glyphView = glyph; labelView = label
-        innerCol.addView(glyph); innerCol.addView(label)
-        inner.addView(innerCol, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER))
-        wrap.addView(inner, FrameLayout.LayoutParams(dp(158), dp(158), Gravity.CENTER))
-        column.addView(wrap)
+        labelView = pauseBtn
+        actions.addView(pauseBtn, LinearLayout.LayoutParams(0, dp(46), 1f))
 
-        // elapsed (while running)
-        if (clockRunning) {
-            column.addView(TextView(this).apply {
-                id = 2; textSize = 40f; setTypeface(null, Typeface.BOLD)
-                setTextColor(if (clockPaused) onSurfaceVariantColor else primaryColor)
-                gravity = Gravity.CENTER
-            }.also { elapsedView = it })
-        }
-
-        // stop button (while running)
-        if (clockRunning) {
-            val stopBtn = TextView(this).apply {
-                text = "Stop"; textSize = 18f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-                setTypeface(null, Typeface.BOLD)
-                background = rounded(0xFFFF4038.toInt(), 4)
-                setOnClickListener {
-                    clockPaused = true
-                    stopToActiveJob()
-                }
+        val stopBtn = TextView(this).apply {
+            text = "■ Stop"
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(errorColor)
+            gravity = Gravity.CENTER
+            background = rounded(surfaceVariantColor, 23)
+            isClickable = true
+            setOnClickListener {
+                clockPaused = true
+                stopToActiveJob()
             }
-            column.addView(stopBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         }
+        stopBtnView = stopBtn
+        actions.addView(stopBtn, LinearLayout.LayoutParams(0, dp(46), 1f).apply { leftMargin = dp(10) })
 
-        // Add Task button, always visible under the clock/stop controls
-        column.addView(drawerButton("＋ Add Task") { showAddSession() },
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
+        val addBtn = TextView(this).apply {
+            text = "＋"
+            textSize = 20f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor)
+            gravity = Gravity.CENTER
+            background = rounded(surfaceVariantColor, 23)
+            isClickable = true
+            setOnClickListener { showAddSession() }
+        }
+        actions.addView(addBtn, LinearLayout.LayoutParams(dp(46), dp(46)).apply { leftMargin = dp(10) })
+
+        hero.addView(actions, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
+        column.addView(hero, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(16) })
 
         updateClockViews()
 
-        // ---- status ----
+        // ---- status message ----
         if (statusMessage.isNotEmpty()) {
             val st = TextView(this).apply { text = statusMessage; textSize = 12f; setTextColor(onSurfaceVariantColor) }
-            column.addView(st, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            column.addView(st, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(12) })
         }
 
-        column.addView(View(this).apply { }, LinearLayout.LayoutParams(1, dp(8)))
+        // ---- section title ----
+        column.addView(TextView(this).apply {
+            text = "REPORTS"
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            letterSpacing = 0.05f
+            setTextColor(onSurfaceVariantColor)
+            setPadding(dp(2), 0, 0, dp(8))
+        })
 
         // ---- summaries on the main screen ----
-        // Explicit LayoutParams: a freshly built view has no layoutParams yet, so
-        // setMargins() inside the builder would silently no-op.
         column.addView(buildWeeklySummaryCard(), LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(12); bottomMargin = dp(24)
+            bottomMargin = dp(10)
         })
         column.addView(buildPayPeriodCard(), LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(24)
+        })
     }
 
     private var drawerScrim: View? = null
     private var drawerPanel: View? = null
 
     private fun updateClockViews() {
-        stateView?.visibility = if (!clockRunning) View.GONE else View.VISIBLE
-        // button colors: green idle/stopped, yellow/gold while running (orange when paused)
-        val (b1, b2) = when {
-            !clockRunning -> 0xFF4CAF50.toInt() to 0xFF2E7D32.toInt()   // green
-            clockPaused -> 0xFFFF6D00.toInt() to 0xFFEF4D00.toInt()     // orange (paused)
-            else -> 0xFFFFC107.toInt() to 0xFFFF9800.toInt()            // yellow/gold
-        }
-        haloButtonView?.background = ovalGradient(b1, b2)
-        haloGlowView?.background = GradientDrawable().apply { setShape(GradientDrawable.OVAL)
-            setColor(if (!clockRunning) 0x242E7D32 else 0x24FF8F00) }
         stateView?.text = when {
-            !clockRunning -> ""
-            clockPaused -> "Paused since $startedAt"
-            else -> "Working since $startedAt"
+            !clockRunning -> "TIMER IDLE"
+            clockPaused -> "TIMER PAUSED"
+            else -> "TIMER RUNNING"
         }
-        activeJobView?.text = activeSite()?.name?.let { "Working on $it" } ?: "Select job"
-        glyphView?.text = if (!clockRunning || clockPaused) "▶" else "⏸"
-        labelView?.text = if (!clockRunning) "Start" else if (clockPaused) "Resume" else "Pause"
+        activeJobView?.text = activeSite()?.name ?: "Select job"
+        labelView?.text = when {
+            !clockRunning -> "▶ Start"
+            clockPaused -> "▶ Resume"
+            else -> "⏸ Pause"
+        }
+        labelView?.background = when {
+            !clockRunning -> rounded(0xFF2E7D32.toInt(), 23) // Green for start
+            clockPaused -> rounded(0xFFEF6C00.toInt(), 23)   // Amber/orange for resume
+            else -> rounded(primaryColor, 23)               // M3 Primary teal for pause
+        }
+        stopBtnView?.visibility = if (clockRunning) View.VISIBLE else View.GONE
         elapsedView?.let { tv ->
             tv.text = formatElapsedMs(elapsedMs())
-            tv.setTextColor(if (clockPaused) onSurfaceVariantColor else primaryColor)
+            tv.setTextColor(if (clockPaused) onSurfaceVariantColor else onSurfaceColor)
         }
     }
 
