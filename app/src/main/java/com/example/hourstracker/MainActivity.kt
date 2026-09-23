@@ -76,6 +76,7 @@ class MainActivity : Activity() {
     private var statusMessage = ""
     private var drawerTab = 0 // menu selection: 0 = Projects, 1 = Tasks, 2 = Settings
     private var exportOpen = false // whether the drawer's Export group is expanded
+    private var payOpen = false // whether the Settings pay-period preset menu is expanded
     private var navScreen = 0 // 0 = Home, 1 = Projects, 2 = Tasks, 3 = Settings, 4 = This week tasks, 5 = Pay period tasks
 
     private var jobSites = mutableListOf<JobSite>()
@@ -402,14 +403,68 @@ class MainActivity : Activity() {
         get() = prefs.getFloat("ot_rate", 1.5f).toDouble()
 
     // ===== Pay period =====
-    // A user-picked [start, end] date range (ISO, inclusive) set in Settings →
-    // Pay period. Defaults to the current week + the following week (14 days).
-    private val payPeriodStart: String
-        get() = prefs.getString("pay_start", null)
+    // A picker-preset (this week / this month / last month / bi-weekly / custom)
+    // set in Settings → Pay period, resolved to a concrete [start, end] ISO range
+    // (inclusive) for the "This pay period" card on the main screen. Bi-weekly
+    // (the default) is the current week + the following week (14 days).
+    private val payPreset: String
+        get() {
+            prefs.getString("pay_preset", null)?.let { return it }
+            // First run / upgrade: honour an existing hand-picked range instead
+            // of silently switching it to the bi-weekly default.
+            val s = prefs.getString("pay_start", null)
+            val e = prefs.getString("pay_end", null)
+            return if (s != null && e != null) "custom" else "biweekly"
+        }
+    private val payPresetLabel: String
+        get() = when (payPreset) {
+            "thisweek" -> "This week"
+            "thismonth" -> "This month"
+            "lastmonth" -> "Last month"
+            "custom" -> "Custom"
+            else -> "Bi-weekly"
+        }
+    // Anchor date for the recurring bi-weekly cycle (defaults to this week's Sunday).
+    private val biweeklyStart: String
+        get() = prefs.getString("biweekly_start", null)
             ?: sundayOf(LocalDate.now().toString())
+    // Header label for the picker row: bi-weekly shows its anchor date.
+    private val payHeaderLabel: String
+        get() = if (payPreset == "biweekly")
+            "Bi-weekly · starts ${isoDateDisplay(biweeklyStart)}"
+        else payPresetLabel
+    private fun resolvedPayRange(): Pair<String, String> {
+        if (payPreset == "custom") {
+            val s = prefs.getString("pay_start", null)
+            val e = prefs.getString("pay_end", null)
+            if (s != null && e != null) return s to e
+        }
+        val today = LocalDate.now()
+        val sun = sundayOf(today.toString())
+        val sunD = LocalDate.parse(sun)
+        return when (payPreset) {
+            "thisweek" -> sun.toString() to sunD.plusDays(6).toString()
+            "lastweek" -> sunD.minusWeeks(1).toString() to sunD.minusDays(1).toString()
+            "thismonth" -> today.withDayOfMonth(1).toString() to today.withDayOfMonth(today.lengthOfMonth()).toString()
+            "lastmonth" -> {
+                val first = today.withDayOfMonth(1).minusMonths(1)
+                first.toString() to first.withDayOfMonth(first.lengthOfMonth()).toString()
+            }
+            else -> {
+                // Bi-weekly: a recurring 14-day cycle anchored on a user-picked
+                // date. The current period is whichever aligned window (anchor +
+                // 14k) contains today. Defaults to this week's Sunday.
+                val anchor = try { LocalDate.parse(biweeklyStart) } catch (e: Exception) { LocalDate.now() }
+                val days = java.time.temporal.ChronoUnit.DAYS.between(anchor, today)
+                val start = anchor.plusDays(Math.floorDiv(days, 14L) * 14)
+                start.toString() to start.plusDays(13).toString()
+            }
+        }
+    }
+    private val payPeriodStart: String
+        get() = resolvedPayRange().first
     private val payPeriodEnd: String
-        get() = prefs.getString("pay_end", null)
-            ?: LocalDate.parse(sundayOf(LocalDate.now().toString())).plusDays(13).toString()
+        get() = resolvedPayRange().second
 
 
     // Compute overtime + pay across all jobs for any inclusive [from, to] ISO range.
@@ -1263,11 +1318,8 @@ private fun stopTimerNotification() {
             settingsRowInput("Rate (e.g. 1.5)", rt)
         )))
 
-        // ---- Pay period: the range used by "This pay period" on the main screen ----
-        col.addView(settingsGroup("Pay period", listOf(
-            settingsRowValue("Period start", isoDateDisplay(payPeriodStart)) { showPayDatePicker(true) },
-            settingsRowValue("Period end", isoDateDisplay(payPeriodEnd)) { showPayDatePicker(false) }
-        )))
+        // ---- Pay period: inline preset menu (expands in place, no popup) ----
+        col.addView(buildPayPeriodGroup())
 
         // ---- Appearance ----
         col.addView(settingsGroup("Appearance", listOf(
@@ -1392,6 +1444,126 @@ private fun stopTimerNotification() {
             row.addView(field, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
 
+    /**
+     * Pay period group: a single row that expands an inline preset menu in place
+     * (no popup, no full-page rebuild so scroll position is preserved). Picking a
+     * preset updates the header text and collapses the menu. "Custom range…" is
+     * the one path that still opens a date-picker popup for free-form dates.
+     */
+    private fun buildPayPeriodGroup(): View {
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        wrap.addView(TextView(this).apply {
+            text = "Pay period"; textSize = 12f; setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceVariantColor); setPadding(dp(4), dp(16), 0, dp(6))
+        })
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = card()
+        }
+
+        val labelTxt = TextView(this).apply {
+            text = "Pay period"; textSize = 14f; setTextColor(onSurfaceColor)
+        }
+        val rangeTxt = TextView(this).apply {
+            text = payHeaderLabel; textSize = 14f; setTypeface(null, Typeface.BOLD)
+            setTextColor(primaryColor)
+        }
+        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        left.addView(labelTxt)
+        left.addView(rangeTxt)
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            isClickable = true
+        }
+        header.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        box.addView(header)
+
+        val menuBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun divider(): View = View(this).apply { setBackgroundColor(dividerColor) }
+
+        // (re)build the preset options into menuBox; called each time it opens.
+        fun buildMenu() {
+            menuBox.removeAllViews()
+            val opts = listOf(
+                "This week" to "thisweek",
+                "This month" to "thismonth",
+                "Last month" to "lastmonth",
+                "Bi-weekly (2 wks)" to "biweekly",
+                "Custom range…" to "custom"
+            )
+            opts.forEachIndexed { i, (label, key) ->
+                if (i > 0) menuBox.addView(divider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
+                val opt = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(14), dp(14), dp(14), dp(14))
+                    isClickable = true
+                    setOnClickListener {
+                        // Custom still needs a free-form date, so keep the picker popup.
+                        if (key == "custom") { showPayDatePicker(true); return@setOnClickListener }
+                        val ed = prefs.edit()
+                        ed.putString("pay_preset", key)
+                        ed.remove("pay_start"); ed.remove("pay_end")
+                        ed.apply()
+                        rangeTxt.text = payHeaderLabel
+                        box.removeView(menuBox); payOpen = false
+                        statusMessage = "Pay period: $payHeaderLabel (${isoDateDisplay(payPeriodStart)} - ${isoDateDisplay(payPeriodEnd)})"
+                    }
+                }
+                val active = payPreset == key
+                opt.addView(TextView(this).apply {
+                    text = label; textSize = 14f
+                    setTextColor(if (active) onPrimaryContainerColor else onSurfaceColor)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (active) opt.addView(TextView(this).apply {
+                    text = "✓"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(primaryColor)
+                })
+                menuBox.addView(opt, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                // Picker sub-row sits directly under the Bi-weekly option (not after
+                // Custom). Only shown while bi-weekly is the active preset.
+                if (key == "biweekly" && payPreset == "biweekly") {
+                    menuBox.addView(divider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
+                    val srow = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                        setPadding(dp(20), dp(12), dp(14), dp(12))
+                        isClickable = true
+                        setOnClickListener {
+                            val cur = try { LocalDate.parse(biweeklyStart) } catch (e: Exception) { LocalDate.now() }
+                            DatePickerDialog(this@MainActivity, pickerDialogThemeId(), { _, y, mo, d ->
+                                prefs.edit().putString("biweekly_start", LocalDate.of(y, mo + 1, d).toString()).apply()
+                                rangeTxt.text = payHeaderLabel
+                                box.removeView(menuBox); payOpen = false
+                                statusMessage = "Bi-weekly starts ${isoDateDisplay(biweeklyStart)} (${isoDateDisplay(payPeriodStart)} - ${isoDateDisplay(payPeriodEnd)})"
+                            }, cur.year, cur.monthValue - 1, cur.dayOfMonth).show()
+                        }
+                    }
+                    srow.addView(TextView(this).apply {
+                        text = "Starts on"; textSize = 14f
+                        setTextColor(onSurfaceVariantColor)
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    srow.addView(TextView(this).apply {
+                        text = isoDateDisplay(biweeklyStart); textSize = 14f
+                        setTypeface(null, Typeface.BOLD); setTextColor(primaryColor)
+                    })
+                    menuBox.addView(srow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                }
+            }
+        }
+
+        header.setOnClickListener {
+            if (payOpen) {
+                box.removeView(menuBox); payOpen = false
+            } else {
+                buildMenu()
+                box.addView(menuBox, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                payOpen = true
+            }
+        }
+
+        wrap.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        return wrap
+    }
+
     // Pick the pay period start/end date. The range is kept valid (start <= end)
     // by pushing the other bound when the two would cross.
     private fun showPayDatePicker(isStart: Boolean) {
@@ -1400,6 +1572,7 @@ private fun stopTimerNotification() {
         } catch (e: Exception) { LocalDate.now() }
         DatePickerDialog(this, pickerDialogThemeId(), { _, y, mo, d ->
             val ed = prefs.edit()
+            ed.putString("pay_preset", "custom")
             if (isStart) ed.putString("pay_start", LocalDate.of(y, mo + 1, d).toString())
             else ed.putString("pay_end", LocalDate.of(y, mo + 1, d).toString())
             ed.apply()
