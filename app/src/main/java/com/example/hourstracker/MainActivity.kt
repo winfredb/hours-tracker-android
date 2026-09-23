@@ -75,6 +75,7 @@ class MainActivity : Activity() {
     private var builtStateSig = ""
     private var statusMessage = ""
     private var drawerTab = 0 // menu selection: 0 = Projects, 1 = Tasks, 2 = Settings
+    private var exportOpen = false // whether the drawer's Export group is expanded
     private var navScreen = 0 // 0 = Home, 1 = Projects, 2 = Tasks, 3 = Settings, 4 = This week tasks, 5 = Pay period tasks
 
     private var jobSites = mutableListOf<JobSite>()
@@ -1504,12 +1505,86 @@ private fun stopTimerNotification() {
             })
         }
 
+        // ---- indented sub-item for expandable drawer groups (Export) ----
+        fun subMenuItem(parent: LinearLayout, name: String, sub: String, onClick: () -> Unit) {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(8), dp(12), dp(8))
+                isClickable = true
+                setOnClickListener { onClick() }
+            }
+            item.addView(View(this).apply {}, LinearLayout.LayoutParams(dp(8), dp(1)))
+            val txt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+            txt.addView(TextView(this).apply {
+                text = name; textSize = 14f; setTypeface(null, Typeface.BOLD)
+                setTextColor(onSurfaceColor)
+            })
+            txt.addView(TextView(this).apply {
+                text = sub; textSize = 11f; setTextColor(onSurfaceVariantColor)
+            })
+            item.addView(txt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = dp(10)
+            })
+            parent.addView(item, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(6)
+            })
+        }
+
         sectionLabel("Work")
         menuItem("Projects", "Job sites & rates", "◆", drawerTab == 0) { drawerTab = 0; navScreen = 1; filteredSiteId = null; closeDrawer(); renderAll() }
         menuItem("Tasks", "Recorded sessions", "◷", drawerTab == 1) { drawerTab = 1; navScreen = 2; filteredSiteId = null; closeDrawer(); renderAll() }
         sectionLabel("System")
         menuItem("Settings", "Overtime, pay period", "⚙", drawerTab == 2) { drawerTab = 2; navScreen = 3; filteredSiteId = null; closeDrawer(); renderAll() }
-        menuItem("Export", "Download a summary PDF", "⇩", false) { closeDrawer(); showExportRange() }
+
+        // Export = expandable group: parent pill toggles Export PDF / Share PDF.
+        val exItem = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(12), dp(8))
+            background = if (exportOpen) rounded(primaryContainerColor, 16) else null
+            isClickable = true
+            setOnClickListener { exportOpen = !exportOpen; renderAll() }
+        }
+        exItem.addView(TextView(this).apply {
+            text = "⇩"; textSize = 14f; setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
+            if (exportOpen) {
+                background = rounded(primaryColor, 10); setTextColor(0xFFFFFFFF.toInt())
+            } else {
+                background = rounded(surfaceVariantColor, 10); setTextColor(onSurfaceVariantColor)
+            }
+        }, LinearLayout.LayoutParams(dp(36), dp(36)))
+        val exTxt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+        exTxt.addView(TextView(this).apply {
+            text = "Export"; textSize = 14f; setTypeface(null, Typeface.BOLD)
+            setTextColor(if (exportOpen) onPrimaryContainerColor else onSurfaceColor)
+        })
+        exTxt.addView(TextView(this).apply {
+            text = "Download or share a PDF"; textSize = 11f
+            setTextColor(if (exportOpen) onPrimaryContainerColor else onSurfaceVariantColor)
+            alpha = if (exportOpen) 0.85f else 1f
+        })
+        exItem.addView(exTxt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            leftMargin = dp(14)
+        })
+        exItem.addView(TextView(this).apply {
+            text = if (exportOpen) "▾" else "▸"; textSize = 14f; setTextColor(onSurfaceVariantColor)
+        })
+        col.addView(exItem, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(2)
+        })
+
+        if (exportOpen) {
+            val subCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), 0, 0, 0)
+            }
+            subMenuItem(subCol, "Export PDF", "Save a summary to Downloads") { exportOpen = false; closeDrawer(); showExportRangeDialog(false) }
+            subMenuItem(subCol, "Share PDF", "Send via the share sheet") { exportOpen = false; closeDrawer(); showExportRangeDialog(true) }
+            col.addView(subCol, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(6)
+            })
+        }
 
         // Spacer pushes the credit line to the bottom of the (full-height) menu.
         col.addView(View(this).apply {}, LinearLayout.LayoutParams(1, 0).apply { weight = 1f })
@@ -2275,26 +2350,6 @@ private fun stopTimerNotification() {
         }
 
         // ==================== DATE-RANGE EXPORT ====================
-
-        private fun showExportRange() {
-            // Top-level Export menu: save presets, plus a separate Share PDF…
-            // entry that reuses the same presets but opens the share sheet.
-            val opts = listOf(
-                "This week" to { presetRange("thisweek", false) },
-                "Last week" to { presetRange("lastweek", false) },
-                "2 weeks from date…" to { showTwoWeekFromDatePicker(false) },
-                "All time" to { presetRange("all", false) },
-                "Custom range…" to { showCustomRangePicker(false) },
-                "Share PDF…" to { showExportRangeDialog(share = true) }
-            )
-            AlertDialog.Builder(this, pickerDialogThemeId())
-                .setTitle("Export")
-                .setItems(opts.map { it.first }.toTypedArray()) { _, which ->
-                    opts[which].second()
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-        }
 
         private fun showExportRangeDialog(share: Boolean) {
             // Each preset resolves its [from, to] range and exports it; the
