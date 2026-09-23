@@ -223,41 +223,29 @@ class MainActivity : Activity() {
         return if (c != 0) c else fallback
     }
 
-    private val bgColor get() = dyn(android.R.color.system_neutral1_900, android.R.color.system_neutral1_50,
-        if (isDark) 0xFF111412.toInt() else 0xFFF8FAF6.toInt())
+    private val bgColor get() = if (isDark) 0xFF0B0F17.toInt() else 0xFFF8FAFC.toInt()
     private val surfaceColor get() = bgColor
-    private val surfaceVariantColor get() = dyn(android.R.color.system_neutral2_800, android.R.color.system_neutral2_100,
-        if (isDark) 0xFF3F4943.toInt() else 0xFFDEE4DD.toInt())
-    private val onSurfaceColor get() = dyn(android.R.color.system_neutral1_50, android.R.color.system_neutral1_900,
-        if (isDark) 0xFFE1E3DE.toInt() else 0xFF191C1A.toInt())
-    private val onSurfaceVariantColor get() = dyn(android.R.color.system_neutral2_200, android.R.color.system_neutral2_700,
-        if (isDark) 0xFFBFC9C1.toInt() else 0xFF3F4943.toInt())
-    private val primaryColor get() = dyn(android.R.color.system_accent1_200, android.R.color.system_accent1_600,
-        if (isDark) 0xFF4DB6AC.toInt() else 0xFF00695C.toInt())
-    private val primaryContainerColor get() = dyn(android.R.color.system_accent1_900, android.R.color.system_accent1_100,
-        if (isDark) 0xFF00504A.toInt() else 0xFFB2DFDB.toInt())
-    private val onPrimaryContainerColor get() = dyn(android.R.color.system_accent1_100, android.R.color.system_accent1_900,
-        if (isDark) 0xFFB2DFDB.toInt() else 0xFF00251A.toInt())
-    private val errorColor get() = dyn(android.R.color.system_error_200, android.R.color.system_error_600,
-        if (isDark) 0xFFF2B8B5.toInt() else 0xFFB3261E.toInt())
-    /** M3 surface-container tone — used for card fills and the dark status strip. */
-    private val surfaceContainerColor get() = dyn(android.R.color.system_neutral1_800, android.R.color.system_neutral1_100,
-        if (isDark) 0xFF1B1F1D.toInt() else 0xFFF1F4F0.toInt())
-    /** M3 outline — used for outlined cards and hairline dividers. */
-    private val outlineColor get() = dyn(android.R.color.system_neutral2_600, android.R.color.system_neutral2_500,
-        if (isDark) 0xFF8C958E.toInt() else 0xFF6F7972.toInt())
-    // M3 top app bars are surface-toned. The status-bar strip keeps a solid tone so
-    // the system icons stay legible: a light container in light mode (dark icons),
-    // a dark surface in dark mode (light icons).
-    private val appBarColor get() = if (isDark) surfaceContainerColor else primaryContainerColor
+    private val surfaceVariantColor get() = if (isDark) 0xFF1E293B.toInt() else 0xFFF1F5F9.toInt()
+    private val onSurfaceColor get() = if (isDark) 0xFFF8FAFC.toInt() else 0xFF0F172A.toInt()
+    private val onSurfaceVariantColor get() = if (isDark) 0xFF94A3B8.toInt() else 0xFF64748B.toInt()
+    private val primaryColor get() = if (isDark) 0xFF10B981.toInt() else 0xFF059669.toInt()
+    private val primaryContainerColor get() = if (isDark) 0xFF064E3B.toInt() else 0xFFD1FAE5.toInt()
+    private val onPrimaryContainerColor get() = if (isDark) 0xFF6EE7B7.toInt() else 0xFF065F46.toInt()
+    private val errorColor get() = if (isDark) 0xFFF87171.toInt() else 0xFFDC2626.toInt()
+    /** Surface-container tone — used for card fills and the status strip. */
+    private val surfaceContainerColor get() = if (isDark) 0xFF131A26.toInt() else 0xFFFFFFFF.toInt()
+    /** Outline — used for card borders and hairline dividers. */
+    private val outlineColor get() = if (isDark) 0xFF1E293B.toInt() else 0xFFE2E8F0.toInt()
+    // Top band backdrop keeps clean contrast in both modes.
+    private val appBarColor get() = if (isDark) surfaceContainerColor else surfaceVariantColor
 
     private fun parseHex(hex: String): Int {
         val h = hex.removePrefix("#").trim()
         return if (h.length == 6) {
             try {
                 Color.rgb(h.substring(0, 2).toInt(16), h.substring(2, 4).toInt(16), h.substring(4, 6).toInt(16))
-            } catch (e: Exception) { 0xFF00796B.toInt() }
-        } else 0xFF00796B.toInt()
+            } catch (e: Exception) { 0xFF059669.toInt() }
+        } else 0xFF059669.toInt()
     }
 
     // Dialog theme so the native date/time pickers match the app UI accent colors.
@@ -374,7 +362,7 @@ class MainActivity : Activity() {
         cv.put("location", if (location.isBlank()) null else location)
         cv.put("employer", if (employer.isBlank()) null else employer)
         cv.put("hourly_wage", parseWage(wage))
-        cv.put("color", "#00796B")
+        cv.put("color", "#059669")
         db.writableDatabase.insert("job_sites", null, cv)
         refreshData(); renderAll()
     }
@@ -872,13 +860,14 @@ private fun stopTimerNotification() {
         labelView = pauseBtn
         actions.addView(pauseBtn, LinearLayout.LayoutParams(0, dp(46), 1f))
 
+        val stopBg = if (isDark) 0x33EF4444.toInt() else 0xFFFEE2E2.toInt()
         val stopBtn = TextView(this).apply {
             text = "■ Stop"
             textSize = 14f
             setTypeface(null, Typeface.BOLD)
             setTextColor(errorColor)
             gravity = Gravity.CENTER
-            background = rounded(surfaceVariantColor, 23)
+            background = rounded(stopBg, 23)
             isClickable = true
             setOnClickListener {
                 clockPaused = true
@@ -958,10 +947,11 @@ private fun stopTimerNotification() {
             else -> "⏸ Pause"
         }
         labelView?.background = when {
-            !clockRunning -> rounded(0xFF2E7D32.toInt(), 23) // Green for start
-            clockPaused -> rounded(0xFFEF6C00.toInt(), 23)   // Amber/orange for resume
-            else -> rounded(primaryColor, 23)               // M3 Primary teal for pause
+            !clockRunning -> rounded(primaryColor, 23)
+            clockPaused -> rounded(if (isDark) 0xFFF59E0B.toInt() else 0xFFD97706.toInt(), 23)
+            else -> rounded(primaryColor, 23)
         }
+        labelView?.let { (it as? TextView)?.setTextColor(if (isDark) 0xFF064E3B.toInt() else Color.WHITE) }
         stopBtnView?.visibility = if (clockRunning) View.VISIBLE else View.GONE
         elapsedView?.let { tv ->
             tv.text = formatElapsedMs(elapsedMs())
@@ -1163,7 +1153,7 @@ private fun stopTimerNotification() {
             }
             valCol.addView(TextView(this).apply {
                 text = formatMinutesShort(s.totalMin); textSize = 20f
-                setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor); gravity = Gravity.END
+                setTypeface(null, Typeface.BOLD); setTextColor(primaryColor); gravity = Gravity.END
             })
             valCol.addView(TextView(this).apply {
                 text = "$${String.format(Locale.US, "%.2f", totalPay)}"
