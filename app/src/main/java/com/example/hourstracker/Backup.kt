@@ -3,6 +3,7 @@ package com.example.hourstracker
 import android.content.ContentValues
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -101,6 +102,24 @@ object Backup {
 
     /** Suggested filename for the document picker. */
     fun suggestedName(): String = "hours-tracker-backup-${LocalDate.now()}.json"
+
+    /**
+     * Builds the JSON and writes it into the app's Backup folder, updating
+     * Last-backed-up. Returns the file Uri. Throws with the real cause on
+     * failure so the UI can say what went wrong instead of a bare "failed".
+     */
+    fun save(context: Context, prefs: SharedPreferences): Uri {
+        return try {
+            val uri = ExportFile.writeBackup(context, prefs, suggestedName(), build(context, prefs).toByteArray(Charsets.UTF_8))
+            prefs.edit().putString("last_backup_at", LocalDateTime.now().toString()).apply()
+            uri
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                "Could not write backup to ${ExportFile.rootLabel(context, prefs)} — ${e.message}",
+                e
+            )
+        }
+    }
 
     /** "N projects, M tasks" — used in the confirmation and result dialogs. */
     fun describe(projects: Int, tasks: Int): String =

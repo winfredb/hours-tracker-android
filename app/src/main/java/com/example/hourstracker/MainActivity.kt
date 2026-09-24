@@ -1512,6 +1512,19 @@ private fun stopTimerNotification() {
             settingsRowValue("Theme", themeLabel()) { toggleDark() }
         )))
 
+        // ---- Storage ---- 
+        col.addView(settingsGroup("Storage", listOf(
+            settingsRowValue("Folder", ExportFile.rootLabel(this, prefs)) {
+                infoDialog(
+                    "Storage",
+                    "Exports and backups save to:\n${ExportFile.rootLabel(this, prefs)}\n\n" +
+                        "That's a normal folder under Download, visible in any file app " +
+                        "and needing no special permission. Copy backups off this phone " +
+                        "(share, Drive, email) so they survive losing the device."
+                )
+            }
+        )))
+
         // ---- Backup / restore ----
         col.addView(settingsGroup("Backup & restore", listOf(
             settingsRowValue(
@@ -1519,29 +1532,19 @@ private fun stopTimerNotification() {
                 if (prefs.getBoolean(AutoBackup.KEY_ENABLED, false)) "On" else "Off"
             ) { toggleAutoBackup() },
             settingsRowValue("Back up at", AutoBackup.displayTime(prefs)) { pickAutoBackupTime() },
-            settingsRowValue("Backup to", autoBackupDestLabel()) { pickAutoBackupDest() },
             settingsRowValue("Back up now", lastBackupLabel()) { startBackup() },
             settingsRowValue("Restore from file", "Choose file") { confirmRestore() }
         )))
+        col.addView(TextView(this).apply {
+            text = "Backups save to:\n${ExportFile.rootLabel(this@MainActivity, prefs)}/Backup\nChecks, PDFs, and backups all live in this folder. Copy backups off this phone (share, Drive, email) so they survive losing the device."
+            textSize = 11f; setTextColor(onSurfaceVariantColor); setPadding(dp(4), dp(8), dp(4), dp(8))
+        })
         return col
     }
 
-    /** "Choose file" until a destination is saved, then its file name. */
-    private fun autoBackupDestLabel(): String =
-        prefs.getString(AutoBackup.KEY_NAME, null)
-            ?: prefs.getString(AutoBackup.KEY_URI, null)?.let {
-                (android.net.Uri.parse(it)).lastPathSegment
-            }
-            ?: "Choose file"
-
-    /** Flip the daily backup. Turning it on with no destination picks one first. */
+    /** Flip the daily backup. Always writes to the app's Backup folder. */
     private fun toggleAutoBackup() {
         val on = !prefs.getBoolean(AutoBackup.KEY_ENABLED, false)
-        if (on && prefs.getString(AutoBackup.KEY_URI, null) == null) {
-            pendingEnableAfterDest = true // save the flip for when the file is chosen
-            launchAutoBackupDestPicker()
-            return
-        }
         prefs.edit().putBoolean(AutoBackup.KEY_ENABLED, on).apply()
         AutoBackup.schedule(this, prefs)
         statusMessage = if (on) "Automatic backup on — daily at ${AutoBackup.displayTime(prefs)}"
@@ -1559,24 +1562,6 @@ private fun stopTimerNotification() {
             statusMessage = "Daily backup set for ${AutoBackup.displayTime(prefs)}"
             renderAll()
         }, p.getOrElse(0) { 21 }, p.getOrElse(1) { 0 }, false).show()
-    }
-
-    private fun pickAutoBackupDest() {
-        pendingEnableAfterDest = false // changing the destination shouldn't toggle it
-        launchAutoBackupDestPicker()
-    }
-
-    private fun launchAutoBackupDestPicker() {
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/json"
-            putExtra(Intent.EXTRA_TITLE, Backup.suggestedName())
-        }
-        try {
-            startActivityForResult(intent, reqAutoBackupDest)
-        } catch (e: Exception) {
-            infoDialog("Automatic backup", "No file manager available to choose a destination.")
-        }
     }
 
     /** "never" until the first backup, then the date the last one was written. */
@@ -2589,16 +2574,14 @@ private fun setDrivingWage(wage: String) {
         return if (h > 0) "${h}h ${m}m ${ss}s" else if (m > 0) "${m}m ${ss}s" else "${ss}s"
     }
 
-    // ==================== XLSX EXPORT ====================
+    // ==================== EXPORT ====================
 
     /**
-     * Writes bytes into Downloads/HoursTracker/<subdir>/<filename>. Uses the
-     * MediaStore (Android 10+) so the OS creates and indexes the nested folder
-     * under Downloads reliably under scoped storage; falls back to plain File
-     * IO on older versions. Returns a human-friendly display path.
+     * Writes bytes into the app's own Export/ directory (see [ExportFile]).
+     * Returns a display path and the file:// Uri used for sharing.
      */
-    private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): Pair<String, Uri?> =
-        ExportFile.write(this, subdir, filename, bytes)
+    private fun writeDownload(subdir: String, filename: String, bytes: ByteArray): Uri? =
+        ExportFile.write(this, prefs, subdir, filename, bytes)
 
     /** Shares a generated file (e.g. exported PDF) via the system share sheet. */
     private fun shareFile(filename: String, uri: Uri?) {
@@ -2630,31 +2613,32 @@ private fun setDrivingWage(wage: String) {
     // notes, wages, and the overtime/pay-period/theme settings). Restoring it
     // rebuilds the database, which is what makes a clean install recoverable.
     //
-    // Both directions go through the system document picker (Storage Access
-    // Framework) instead of writing into Downloads ourselves. A file we put in
-    // Downloads is owned by the app and is *not* readable after a reinstall —
-    // and on Android 13+ we cannot read other apps' Downloads documents at all.
-    // A file the user picks themselves survives uninstall and reinstall, can be
-    // synced to Drive, and needs no storage permission on any API level.
+    // Both directions use the app's own storage. Backups are written straight
+    // into the app's Backup folder ([ExportFile.writeBackup]); Restore reads any
+    // .json the user picks via the system document picker, so a copy that was
+    // synced off-device (Drive, email) can be brought back after a reinstall.
 
-    private val reqBackup = 3001
     private val reqRestore = 3002
-    private val reqAutoBackupDest = 3003
 
-    /** True while the destination picker is up because "Automatic backup" was toggled on. */
-    private var pendingEnableAfterDest = false
-
+    /** Builds the JSON and writes it into the app's Backup folder (no document
+         * picker needed — the folder is app-owned). Reports where it was saved.
+         */
     private fun startBackup() {
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/json"
-            putExtra(Intent.EXTRA_TITLE, Backup.suggestedName())
-        }
         try {
-            startActivityForResult(intent, reqBackup)
+            val uri = Backup.save(this, prefs)
+            if (uri == null) throw IllegalStateException("Could not write backup")
+            val c = Backup.currentCounts(this)
+            statusMessage = "Backed up ${Backup.describe(c.first, c.second)} ✓"
+            infoDialog(
+                "Backup complete ✓",
+                "Saved:\n• ${ExportFile.rootLabel(this, prefs)}/Backup/${uri.lastPathSegment?.substringAfterLast('/')}\n\n" +
+                    "It holds every project and task, including times and breaks. Copy it off this phone (share, Drive, email) " +
+                    "so it survives losing the device."
+            )
         } catch (e: Exception) {
-            infoDialog("Backup", "No file manager available to save the backup.")
+            infoDialog("Backup failed", e.message ?: "Unknown error")
         }
+        refreshData(); renderAll()
     }
 
     private fun confirmRestore() {
@@ -2693,50 +2677,6 @@ private fun setDrivingWage(wage: String) {
         if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         when (requestCode) {
-            reqAutoBackupDest -> {
-                try {
-                    contentResolver.takePersistableUriPermission(
-                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                } catch (e: Exception) {
-                    // Provider refuses persistable grants (some do). The write still
-                    // works for this session; auto-backup just can't run headlessly.
-                }
-                prefs.edit()
-                    .putString(AutoBackup.KEY_URI, uri.toString())
-                    .putString(AutoBackup.KEY_NAME, uri.lastPathSegment ?: "backup.json")
-                    .putBoolean(
-                        AutoBackup.KEY_ENABLED,
-                        pendingEnableAfterDest || prefs.getBoolean(AutoBackup.KEY_ENABLED, false)
-                    )
-                    .apply()
-                pendingEnableAfterDest = false
-                AutoBackup.schedule(this, prefs)
-                statusMessage = if (prefs.getBoolean(AutoBackup.KEY_ENABLED, false))
-                    "Automatic backup on — daily at ${AutoBackup.displayTime(prefs)}"
-                else "Destination set — turn on automatic backup to schedule it"
-                renderAll()
-            }
-            reqBackup -> {
-                try {
-                    val json = Backup.build(this, prefs)
-                    contentResolver.openOutputStream(uri, "wt")?.use { out ->
-                        out.write(json.toByteArray(Charsets.UTF_8))
-                    } ?: throw IllegalStateException("Could not open that file for writing")
-                    prefs.edit().putString("last_backup_at", java.time.LocalDateTime.now().toString()).apply()
-                    val c = Backup.currentCounts(this)
-                    statusMessage = "Backed up ${Backup.describe(c.first, c.second)} ✓"
-                    infoDialog(
-                        "Backup complete ✓",
-                        "Saved ${uri.lastPathSegment ?: "backup file"}\n\n" +
-                            "It holds every project and task, including times and breaks. " +
-                            "Keep a copy off this phone (Drive, email) so it survives losing the device."
-                    )
-                } catch (e: Exception) {
-                    infoDialog("Backup failed", e.message ?: "Unknown error")
-                }
-                refreshData(); renderAll()
-            }
             reqRestore -> {
                 try {
                     val text = contentResolver.openInputStream(uri)?.use {
@@ -2915,7 +2855,7 @@ private fun setDrivingWage(wage: String) {
                 }
 
                 val label = "${from}_to_${to}"
-                val (pdfPath, pdfUri) = writeDownload("Export", "Summary_$label.pdf", buildPdf(from, to, summaryRows, weekRows))
+                val pdfUri = writeDownload("Export", "Summary_$label.pdf", buildPdf(from, to, summaryRows, weekRows))
                 val filename = "Summary_$label.pdf"
                 // Share mode: write the PDF (needed to get a Uri) then open the
                 // share sheet directly instead of the save confirmation dialog.
@@ -2928,7 +2868,7 @@ private fun setDrivingWage(wage: String) {
                 statusMessage = "Exported $from → $to (pdf) ✓"
                 AlertDialog.Builder(this, pickerDialogThemeId())
                     .setTitle("Export complete ✓")
-                    .setMessage("Saved:\n• $pdfPath")
+                    .setMessage("Saved:\n• ${ExportFile.rootLabel(this@MainActivity, prefs)}/Export/Summary_$label.pdf")
                     .setPositiveButton("OK", null)
                     .setNeutralButton("Share", { _, _ -> shareFile(filename, pdfUri) })
                     .show()

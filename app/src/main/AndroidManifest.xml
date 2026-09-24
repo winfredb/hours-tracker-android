@@ -5,7 +5,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.PINS_WIDGETS" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- No Auto Backup / device-transfer. With this on, Android silently restores
@@ -62,8 +61,9 @@
 
         <!-- Native stand-in for FileProvider. exported=false + grantUriPermissions:
              only explicitly-granted, temporary read access to files under the
-             Downloads/HoursTracker root, so ACTION_SEND sharing works on API
-             26-28 where ExportFile returns a file:// Uri. -->
+             app's own external directory (Export/, Backup/), so ACTION_SEND
+             sharing works by passing a file:// Uri that this provider maps to a
+             content:// Uri on any API level. -->
         <provider
             android:name=".ProjectFileProvider"
             android:authorities="com.example.hourstracker2.fileprovider"

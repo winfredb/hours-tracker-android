@@ -5,7 +5,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.net.Uri
-import android.os.Environment
 import android.os.ParcelFileDescriptor
 import java.io.File
 import java.io.FileNotFoundException
@@ -13,16 +12,15 @@ import java.io.FileNotFoundException
 /**
  * Minimal native stand-in for androidx FileProvider.
  *
- * The summary PDF lives in Downloads/HoursTracker. On Android 10+ (`writeDownload`)
- * we get a MediaStore content Uri straight away, which shares cleanly. On API 26-28
- * `ExportFile` hands back a `file://` Uri, and handing a `file://` Uri to an
- * ACTION_SEND intent throws FileUriExposedException on every receiving app. This
- * provider maps a small `content://` Uri back to that file so sharing works on all
- * API levels (minSdk is 26) without pulling in the AndroidX dependency.
+ * The summary PDF lives in the app's own external directory (Export/). Sharing a
+ * `file://` Uri to an ACTION_SEND intent throws FileUriExposedException on every
+ * receiving app, so this provider maps a small `content://` Uri back to that file,
+ * making sharing work on all API levels (minSdk is 26) without the AndroidX
+ * dependency.
  *
  * The provider path encodes the absolute file path and only serves files that
- * resolve inside the Downloads/HoursTracker root (or the app's own dirs), so a
- * coincidentally-crafted Uri cannot read arbitrary files.
+ * resolve inside the app's own directories, so a coincidentally-crafted Uri
+ * cannot read arbitrary files.
  */
 class ProjectFileProvider : ContentProvider() {
 
@@ -46,8 +44,6 @@ class ProjectFileProvider : ContentProvider() {
 
         private fun allowedRoots(context: Context): List<String> {
             val roots = mutableListOf<String>()
-            val dl = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            roots.add(File(dl, "HoursTracker").canonicalPath)
             context.getExternalFilesDir(null)?.let { roots.add(it.canonicalPath) }
             context.filesDir.canonicalPath.let { roots.add(it) }
             return roots
