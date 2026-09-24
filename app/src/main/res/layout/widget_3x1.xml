@@ -109,6 +109,17 @@
             android:textColor="#A7B0AB"
             android:text=""/>
 
+        <TextView android:id="@+id/pausedText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:textColor="#F59E0B"
+            android:visibility="gone"
+            android:text="Timer paused"/>
+
     </LinearLayout>
 
     <LinearLayout android:id="@+id/controls"

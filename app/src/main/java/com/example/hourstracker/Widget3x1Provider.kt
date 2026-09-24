@@ -262,6 +262,9 @@ class Widget3x1Provider : AppWidgetProvider() {
                 R.id.employerText,
                 if (activeEmployer.isBlank()) android.view.View.GONE else android.view.View.VISIBLE)
 
+            // "Timer paused" badge, shown only while paused.
+            views.setViewVisibility(R.id.pausedText, if (paused) android.view.View.VISIBLE else android.view.View.GONE)
+
             // Left edge stripe = clock state. Idle (brick) is the XML default, so a
             // widget that has never been updated still reads as idle rather than
             // "running".

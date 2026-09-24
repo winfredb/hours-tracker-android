@@ -6,5 +6,6 @@ data class JobSite(
     val location: String? = null,
     val employer: String? = null,
     val hourlyWage: String? = null,
-    val color: String = "#6750A4"
+    val color: String = "#6750A4",
+    val driveMinutes: Int = 0
 )

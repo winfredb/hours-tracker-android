@@ -47,7 +47,7 @@ object Backup {
         val tasks = JSONArray()
         try {
             db.readableDatabase.rawQuery(
-                "SELECT id, name, location, employer, hourly_wage, color FROM job_sites ORDER BY id", null
+                "SELECT id, name, location, employer, hourly_wage, color, drive_minutes FROM job_sites ORDER BY id", null
             ).use { c ->
                 while (c.moveToNext()) {
                     val o = JSONObject()
@@ -58,6 +58,7 @@ object Backup {
                     // Numeric, and null-safe: a project with no wage keeps no wage.
                     o.put("hourlyWage", if (c.isNull(4)) JSONObject.NULL else c.getDouble(4))
                     o.put("color", c.getString(5) ?: "#6750A4")
+                    o.put("driveMinutes", c.getInt(6))
                     projects.put(o)
                 }
             }
@@ -186,6 +187,7 @@ object Backup {
                         if (p.isNull("hourlyWage")) putNull("hourly_wage")
                         else put("hourly_wage", p.optDouble("hourlyWage"))
                         put("color", p.optString("color").ifBlank { "#6750A4" })
+                        put("drive_minutes", p.optInt("driveMinutes", 0))
                     }
                     val newId = w.insert("job_sites", null, cv)
                     if (newId == -1L) continue

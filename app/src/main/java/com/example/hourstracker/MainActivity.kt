@@ -28,6 +28,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -103,6 +104,9 @@ class MainActivity : Activity() {
     private var weekPayView: TextView? = null
     private var periodTotalsView: TextView? = null
     private var periodPayView: TextView? = null
+
+    // Built-in project name for clocking drive time (see ensureDrivingProject).
+    private val DRIVING_NAME = "Driving"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -315,8 +319,29 @@ class MainActivity : Activity() {
     private fun stateSig(): String = "$clockRunning|$clockPaused|$activeJobId|${sessions.size}"
 
     private fun refreshData() {
+        ensureDrivingProject()
         jobSites = querySites()
         sessions = querySessions()
+    }
+
+    // The built-in "Driving" project: always present so it appears in the job
+    // picker (clock driving time like any other project, eligible for overtime).
+    // Its wage is set from the drawer (Driving → hourly rate); leave it blank/0 to
+    // track driving hours without charging. Re-created from nothing if removed.
+    private fun ensureDrivingProject() {
+        val drv = db.writableDatabase
+        val exists = try {
+            drv.rawQuery("SELECT id FROM job_sites WHERE name=? LIMIT 1", arrayOf(DRIVING_NAME)).use { c -> c.moveToFirst() }
+        } catch (t: Throwable) { false }
+        if (!exists) {
+            try {
+                val cv = android.content.ContentValues()
+                cv.put("name", DRIVING_NAME)
+                cv.put("location", "Commute")
+                cv.put("color", "#0284C7")
+                drv.insert("job_sites", null, cv)
+            } catch (t: Throwable) { }
+        }
     }
 
     // One-time repair for rows older builds could write with a blank start/end
@@ -349,7 +374,10 @@ class MainActivity : Activity() {
                         if (idx >= 0 && !c.isNull(idx)) c.getString(idx) else null
                     },
                     hourlyWage = wage,
-                    color = c.getString(c.getColumnIndexOrThrow("color"))
+                    color = c.getString(c.getColumnIndexOrThrow("color")),
+                    driveMinutes = c.getColumnIndex("drive_minutes").let { idx ->
+                        if (idx >= 0 && !c.isNull(idx)) c.getInt(idx) else 0
+                    }
                 ))
             }
         }
@@ -374,23 +402,25 @@ class MainActivity : Activity() {
         return out
     }
 
-    private fun addSite(name: String, location: String = "", employer: String = "", wage: String? = null) {
+    private fun addSite(name: String, location: String = "", employer: String = "", wage: String? = null, driveMinutes: Int = 0) {
         val cv = android.content.ContentValues()
         cv.put("name", name)
         cv.put("location", if (location.isBlank()) null else location)
         cv.put("employer", if (employer.isBlank()) null else employer)
         cv.put("hourly_wage", parseWage(wage))
         cv.put("color", "#059669")
+        cv.put("drive_minutes", driveMinutes)
         db.writableDatabase.insert("job_sites", null, cv)
         refreshData(); renderAll()
     }
 
-    private fun renameSite(id: Int, name: String, location: String, employer: String = "", wage: String? = null) {
+    private fun renameSite(id: Int, name: String, location: String, employer: String = "", wage: String? = null, driveMinutes: Int = 0) {
         android.content.ContentValues().apply {
             put("name", name)
             put("location", if (location.isBlank()) null else location)
             put("employer", if (employer.isBlank()) null else employer)
             put("hourly_wage", parseWage(wage))
+            put("drive_minutes", driveMinutes)
             db.writableDatabase.update("job_sites", this, "id=?", arrayOf(id.toString()))
         }
         refreshData(); renderAll()
@@ -489,26 +519,50 @@ class MainActivity : Activity() {
     private fun rangeSummary(from: String, to: String, extra: List<WorkSession> = emptyList()): Quad {
         val saved = sessions.filter { it.date >= from && it.date <= to }
         val inRange = saved + extra.filter { it.date >= from && it.date <= to }
-        val totalMin = inRange.sumOf { workedMinutes(it) }
+
+        // Auto drive time: credited once per day using the longest drive among the
+        // projects worked that day (the commute), attributed to that project. Skipped
+        // when the ONLY project worked that day is the built-in "Driving" catch-all —
+        // there the commute was clocked manually, so auto-adding it would double-count.
+        val drive = autoDriveByDay(inRange)
+        var totalMin = inRange.sumOf { workedMinutes(it) } + drive.values.sumOf { it.second }
+
         val thresholdSec = (overtimeThresholdHours * 60).toInt()
         var otMin = 0
         var basePay = 0.0
         var otPay = 0.0
         // Each calendar week gets its own threshold, so a multi-week pay period
-        // earns overtime the same way it would week by week.
+        // earns overtime the same way it would week by week. Auto-drive minutes are
+        // folded into a week's total (so they can push it past the threshold and the
+        // drive's own OT share is priced at the owning project's wage).
         inRange.groupBy { sundayOf(it.date) }.forEach { (_, weekSessions) ->
-            val weekMin = weekSessions.sumOf { workedMinutes(it) }
+            val weekDates = weekSessions.map { it.date }.toSet()
+            val siteWork = HashMap<Int, Int>()
+            weekSessions.forEach { s ->
+                siteWork[s.jobSiteId] = (siteWork[s.jobSiteId] ?: 0) + workedMinutes(s)
+            }
+            // Attribute this week's drive minutes to their owning projects/dates.
+            val siteDrive = HashMap<Int, Int>()
+            var weekDrive = 0
+            drive.forEach { (date, pair) ->
+                if (date in weekDates) {
+                    siteDrive[pair.first] = (siteDrive[pair.first] ?: 0) + pair.second
+                    weekDrive += pair.second
+                }
+            }
+            val weekMin = siteWork.values.sum() + weekDrive
             val weekOt = (weekMin - minOf(weekMin, thresholdSec)).coerceAtLeast(0)
             otMin += weekOt
             if (weekMin > 0) {
-                jobSites.forEach siteLoop@{ site ->
-                    val siteMin = weekSessions.filter { it.jobSiteId == site.id }.sumOf { workedMinutes(it) }
+                // Include any site that either worked or earned auto-drive this week.
+                (siteWork.keys + siteDrive.keys).forEach { siteId ->
+                    val siteMin = (siteWork[siteId] ?: 0) + (siteDrive[siteId] ?: 0)
                     if (siteMin > 0) {
-                        val wage = site.hourlyWage?.trim()?.toDoubleOrNull() ?: return@siteLoop
-                        // The week's overtime is job-agnostic, so split it across the jobs
-                        // in proportion to their hours, then price each job's share at its
-                        // own wage. (Deriving it per job from min(siteMin, threshold) billed
-                        // nothing whenever no single job passed the threshold.)
+                        val site = jobSites.find { it.id == siteId } ?: return@forEach
+                        val wage = site.hourlyWage?.trim()?.toDoubleOrNull() ?: return@forEach
+                        // The week's overtime is job-agnostic, so split it across the
+                        // projects (work + their drive) in proportion to their minutes,
+                        // then price each project's share at its own wage.
                         val siteOt = if (siteMin >= weekMin) weekOt
                         else Math.round(weekOt.toDouble() * siteMin / weekMin).toInt()
                         val siteReg = siteMin - siteOt
@@ -519,6 +573,28 @@ class MainActivity : Activity() {
             }
         }
         return Quad(totalMin, otMin, basePay, otPay)
+    }
+
+    /**
+     * Maps each worked date to the auto-drive credit for that day: the longest drive
+     * among the projects worked that day (the {siteId, minutes} pair). Not credited
+     * when the ONLY project that day is the built-in "Driving" catch-all — there the
+     * commute was clocked manually, so auto-adding it would double-count.
+     */
+    private fun autoDriveByDay(inRange: List<WorkSession>): Map<String, Pair<Int, Int>> {
+        val drivingId = jobSites.find { it.name == DRIVING_NAME }?.id
+        val result = HashMap<String, Pair<Int, Int>>()
+        inRange.groupBy { it.date }.forEach { (date, daySessions) ->
+            val workedIds = daySessions.map { it.jobSiteId }.distinct()
+            val onlyDriving = drivingId != null && workedIds.size == 1 && workedIds.single() == drivingId
+            if (onlyDriving) return@forEach
+            val top = workedIds
+                .mapNotNull { id -> jobSites.find { it.id == id } }
+                .filter { (it.driveMinutes ?: 0) > 0 }
+                .maxByOrNull { it.driveMinutes ?: 0 }
+            if (top != null) result[date] = top.id to (top.driveMinutes ?: 0)
+        }
+        return result
     }
 
     // Simple 4-value holder (keeps rangeSummary readable).
@@ -1745,7 +1821,7 @@ private fun stopTimerNotification() {
         // ---- menu pill: icon chip + title + subtitle; active tab = tonal fill ----
         // Active state mirrors the M3 nav-drawer "selected" container: a filled tonal pill,
         // solid primary icon chip, and on-primary-container text. Inactive items stay subtle.
-        fun menuItem(name: String, sub: String, iconGlyph: String, active: Boolean, onClick: () -> Unit) {
+        fun menuItem(name: String, sub: String, iconGlyph: String, active: Boolean, iconRes: Int? = null, onClick: () -> Unit) {
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -1754,7 +1830,16 @@ private fun stopTimerNotification() {
                 isClickable = true
                 setOnClickListener { onClick() }
             }
-            item.addView(TextView(this).apply {
+            item.addView(if (iconRes != null) {
+                ImageView(this).apply {
+                    setImageResource(iconRes)
+                    val tint = if (active) 0xFFFFFFFF.toInt() else onSurfaceVariantColor
+                    setColorFilter(tint)
+                    setPadding(dp(9), dp(9), dp(9), dp(9))
+                    background = if (active) rounded(primaryColor, 10) else rounded(surfaceVariantColor, 10)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+            } else TextView(this).apply {
                 text = iconGlyph
                 textSize = 14f
                 setTypeface(null, Typeface.BOLD)
@@ -1819,6 +1904,7 @@ private fun stopTimerNotification() {
         menuItem("Tasks", "Recorded sessions", "◷", drawerTab == 1) { drawerTab = 1; navScreen = 2; filteredSiteId = null; closeDrawer(); renderAll() }
         sectionLabel("System")
         menuItem("Settings", "Overtime, pay period", "⚙", drawerTab == 2) { drawerTab = 2; navScreen = 3; filteredSiteId = null; closeDrawer(); renderAll() }
+        menuItem("Driving", "Set hourly rate", "🚗", false, R.drawable.ic_driving) { closeDrawer(); showDrivingSettings() }
 
         // Export = expandable group: parent pill toggles Export PDF / Share PDF.
         val exItem = LinearLayout(this).apply {
@@ -1849,9 +1935,6 @@ private fun stopTimerNotification() {
         })
         exItem.addView(exTxt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
             leftMargin = dp(14)
-        })
-        exItem.addView(TextView(this).apply {
-            text = if (exportOpen) "▾" else "▸"; textSize = 14f; setTextColor(onSurfaceVariantColor)
         })
         col.addView(exItem, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             bottomMargin = dp(2)
@@ -1992,9 +2075,16 @@ private fun stopTimerNotification() {
                 }
             }.also { row ->
                 val siteSessions = sessions.filter { it.jobSiteId == site.id }
-                val totalMin = siteSessions.sumOf { workedMinutes(it) }
+                var totalMin = siteSessions.sumOf { workedMinutes(it) }
+                // The built-in "Driving" project also reflects every auto-added drive
+                // minute (the commute time credited across all projects) so its total
+                // shows the real driving hours, not just manually-clocked ones.
+                if (site.name == DRIVING_NAME) {
+                    totalMin += autoDriveByDay(sessions).values.sumOf { it.second }
+                }
                 val wageVal = site.hourlyWage?.trim()?.toDoubleOrNull()
                 val earnings = if (wageVal != null) wageVal * totalMin / 60.0 else null
+                val autoDriveMin = if (site.name == DRIVING_NAME) autoDriveByDay(sessions).values.sumOf { it.second } else 0
                 val ci = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 ci.addView(TextView(this).apply { text = site.name; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(onSurfaceColor) })
                 val subParts = mutableListOf<String>()
@@ -2006,6 +2096,9 @@ private fun stopTimerNotification() {
                 statParts.add("${formatMinutesShort(totalMin)}")
                 if (earnings != null) statParts.add("\$${String.format(Locale.US, "%.2f", earnings)} earned")
                 ci.addView(TextView(this).apply { text = statParts.joinToString(" · "); textSize = 12f; setTypeface(null, Typeface.BOLD); setTextColor(primaryColor) })
+                if (autoDriveMin > 0) {
+                    ci.addView(TextView(this).apply { text = "↻ ${formatMinutesShort(autoDriveMin)} auto-added drive"; textSize = 12f; setTextColor(onSurfaceVariantColor) })
+                }
                 row.addView(ci, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             })
             if (expandedProjectId == site.id) {
@@ -2082,6 +2175,11 @@ private fun stopTimerNotification() {
             setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         }
+        val drive = EditText(this).apply {
+            hint = "Drive time per day (min)"; textSize = 18f
+            setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(28), dp(16), dp(28), dp(8))
         }
@@ -2090,15 +2188,18 @@ private fun stopTimerNotification() {
         employer.setMargins(0, dp(10), 0, 0)
         wage.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
         wage.setMargins(0, dp(10), 0, 0)
+        drive.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        drive.setMargins(0, dp(10), 0, 0)
         wrap.addView(name)
         wrap.addView(employer)
         wrap.addView(wage)
+        wrap.addView(drive)
         AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Add Project")
             .setView(wrap)
             .setPositiveButton("Add") { _, _ ->
                 if (name.text.toString().isNotBlank())
-                    addSite(name.text.toString().trim(), "", employer.text.toString().trim(), wage.text.toString().trim())
+                    addSite(name.text.toString().trim(), "", employer.text.toString().trim(), wage.text.toString().trim(), drive.text.toString().trim().toIntOrNull() ?: 0)
                 else statusMessage = "Project name can't be empty"
             }
             .setNegativeButton("Cancel", null)
@@ -2106,29 +2207,68 @@ private fun stopTimerNotification() {
         name.requestFocus()
     }
 
-    // Edit an existing project: name, location, and hourly wage.
+    // Edit an existing project: name, employer, wage, and per-day drive time.
     private fun showEditProject(site: JobSite) {
         val name = EditText(this).apply { setText(site.name); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_TEXT }
-        val loc = EditText(this).apply { setText(site.location ?: ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_TEXT }
         val employer = EditText(this).apply { setText(site.employer ?: ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_TEXT }
         val wage = EditText(this).apply { setText(site.hourlyWage ?: ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL }
+        val drive = EditText(this).apply { setText(if (site.driveMinutes > 0) site.driveMinutes.toString() else ""); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER }
         val nameLbl = TextView(this).apply { text = "Name"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
-        val locLbl = TextView(this).apply { text = "Location"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
         val employerLbl = TextView(this).apply { text = "Employer / client"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
         val wageLbl = TextView(this).apply { text = "Hourly wage ($)"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
+        val driveLbl = TextView(this).apply { text = "Drive time per day (min)"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, 0); minimumWidth = dp(360) }
+        wrap.addView(fieldColumn(nameLbl, name, employerLbl, employer, wageLbl, wage, driveLbl, drive))
         AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Edit Project")
-            .setView(fieldColumn(nameLbl, name, locLbl, loc, employerLbl, employer, wageLbl, wage))
+            .setView(wrap)
             .setPositiveButton("Save") { _, _ ->
                 if (name.text.toString().isNotBlank())
-                    renameSite(site.id, name.text.toString().trim(), loc.text.toString(), employer.text.toString().trim(), wage.text.toString().trim())
+                    renameSite(site.id, name.text.toString().trim(), site.location ?: "", employer.text.toString().trim(), wage.text.toString().trim(), drive.text.toString().trim().toIntOrNull() ?: 0)
                 else statusMessage = "Project name can't be empty"
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    // Job picker: a roomy dialog with one card per project (name, rate, hours
+    // Built-in "Driving" project settings: set its hourly rate. Leave blank/0 to
+// track driving hours without charging (it still counts toward overtime).
+private fun showDrivingSettings() {
+    val driving = jobSites.find { it.name == DRIVING_NAME }
+    val wage = EditText(this).apply {
+        setText(driving?.hourlyWage ?: "")
+        setTextColor(onSurfaceColor)
+        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+    }
+    val hint = TextView(this).apply {
+        text = "Set an hourly rate for driving. Leave blank or 0 to track driving hours without charging. Driving counts toward overtime."
+        textSize = 13f; setTextColor(onSurfaceVariantColor)
+    }
+    val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(4)) }
+    wrap.addView(hint)
+    wrap.addView(wage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+    AlertDialog.Builder(this, pickerDialogThemeId())
+        .setTitle("Driving")
+        .setView(wrap)
+        .setPositiveButton("Save") { _, _ -> setDrivingWage(wage.text.toString().trim()) }
+        .setNegativeButton("Cancel", null)
+        .show()
+    wage.requestFocus()
+}
+
+private fun setDrivingWage(wage: String) {
+    val driving = jobSites.find { it.name == DRIVING_NAME } ?: run { ensureDrivingProject(); refreshData(); jobSites.find { it.name == DRIVING_NAME } }
+    if (driving == null) return
+    val w = wage.toDoubleOrNull()
+    android.content.ContentValues().apply {
+        if (w == null) putNull("hourly_wage") else put("hourly_wage", w)
+        db.writableDatabase.update("job_sites", this, "id=?", arrayOf(driving.id.toString()))
+    }
+    statusMessage = "Driving rate set to ${if (w == 0.0 || w == null) "0 (hours only, no charge)" else "$${String.format(Locale.US, "%.2f", w)}/hr"}"
+    refreshData(); renderAll()
+}
+
+// Job picker: a roomy dialog with one card per project (name, rate, hours
     // booked so far). Used to CHOOSE the active job (the one you're working on),
     // both when starting the timer and when changing it. Not used at stop time —
     // stopping books straight to the active job.
@@ -2732,34 +2872,46 @@ private fun stopTimerNotification() {
                 if (inRange.isEmpty()) { statusMessage = "No tasks in range"; renderAll(); return }
                 val siteName = { id: Int -> jobSites.find { it.id == id }?.name ?: "Unknown" }
 
-                // Summary rows: one per project + grand total.
+                // Auto-drive credit per day, plus per-project and per-week aggregates so
+                // drive time shows up alongside hours in the exported report.
+                val dayDrives = autoDriveByDay(inRange)
+                val driveBySite = HashMap<Int, Int>()
+                dayDrives.values.forEach { (sid, m) -> driveBySite[sid] = (driveBySite[sid] ?: 0) + m }
+
+                // Summary rows: one per project (hours + drive) + grand totals.
                 val bySite = inRange.groupBy { it.jobSiteId }
                     .map { (id, rows) -> Triple(siteName(id), rows.sumOf { workedMinutes(it) }, id) }
                     .sortedBy { it.first }
-                val grandTotal = bySite.sumOf { it.second }
-                val summaryRows = mutableListOf<List<String>>(listOf("Project", "Hours"))
-                bySite.forEach { summaryRows.add(listOf(it.first, hhMm(it.second))) }
-                summaryRows.add(listOf("TOTAL", hhMm(grandTotal)))
+                val summaryRows = mutableListOf<List<String>>(listOf("Project", "Hours", "Drive"))
+                bySite.forEach {
+                    summaryRows.add(listOf(it.first, hhMm(it.second), hhMm(driveBySite[it.third] ?: 0)))
+                }
+                summaryRows.add(listOf("TOTAL", hhMm(bySite.sumOf { it.second }), hhMm(driveBySite.values.sum())))
 
-                // By-week rows: project x week-start(Sunday) -> hours, per-week grand total row.
-                val weekRows = mutableListOf<List<String>>(listOf("Project", "Week of", "Hours"))
+                // By-week rows: project x week-start(Sunday) -> hours and drive, per-week grand total row.
+                val weekRows = mutableListOf<List<String>>(listOf("Project", "Week of", "Hours", "Drive"))
                 val byWeek = inRange.groupBy { sundayOf(it.date) }.toSortedMap()
-                val weeksByProject = mutableMapOf<Int, MutableMap<String, Int>>()
+                val weeksByProject = mutableMapOf<Int, MutableMap<String, Pair<Int, Int>>>()
                 inRange.forEach { s ->
                     val w = sundayOf(s.date)
                     weeksByProject.getOrPut(s.jobSiteId) { mutableMapOf() }[w] =
-                        (weeksByProject[s.jobSiteId]?.get(w) ?: 0) + workedMinutes(s)
+                        (weeksByProject[s.jobSiteId]?.get(w)?.first ?: 0) + workedMinutes(s) to
+                        (weeksByProject[s.jobSiteId]?.get(w)?.second ?: 0)
+                }
+                dayDrives.forEach { (date, pair) ->
+                    val w = sundayOf(date)
+                    val cur = weeksByProject.getOrPut(pair.first) { mutableMapOf() }[w] ?: (0 to 0)
+                    weeksByProject[pair.first]!![w] = cur.first to (cur.second + pair.second)
                 }
                 weeksByProject.toList().sortedBy { siteName(it.first) }.forEach { (pid, weeks) ->
-                    weeks.toSortedMap().forEach { (w, mins) ->
-                        weekRows.add(listOf(siteName(pid), isoDateDisplay(w), hhMm(mins)))
+                    weeks.toSortedMap().forEach { (w, hm) ->
+                        weekRows.add(listOf(siteName(pid), isoDateDisplay(w), hhMm(hm.first), hhMm(hm.second)))
                     }
-                    val total = weeks.values.sum()
-                    weekRows.add(listOf(siteName(pid), "— Total —", hhMm(total)))
+                    weekRows.add(listOf(siteName(pid), "— Total —", hhMm(weeks.values.sumOf { it.first }), hhMm(weeks.values.sumOf { it.second })))
                 }
                 byWeek.forEach { (w, rows) ->
-                    val total = rows.sumOf { workedMinutes(it) }
-                    weekRows.add(listOf("★ Week total", isoDateDisplay(w), hhMm(total)))
+                    val wDrive = dayDrives.filterKeys { sundayOf(it) == w }.values.sumOf { it.second }
+                    weekRows.add(listOf("★ Week total", isoDateDisplay(w), hhMm(rows.sumOf { workedMinutes(it) }), hhMm(wDrive)))
                 }
 
                 val label = "${from}_to_${to}"
@@ -2811,14 +2963,14 @@ private fun stopTimerNotification() {
                 pw.heading("Hours Tracker — Summary")
                 pw.subhead("Range: ${isoDateDisplay(from)}  →  ${isoDateDisplay(to)}")
                 pw.space()
-                pw.table(summary, columns = intArrayOf(420, 100))
+                pw.table(summary, columns = intArrayOf(360, 90, 90))
                 pw.closePage()
 
                 // --- Page: By Week ---
                 pw = pw.newPage()
                 pw.subhead("Range: ${isoDateDisplay(from)}  →  ${isoDateDisplay(to)}")
                 pw.space()
-                pw.table(byWeek, columns = intArrayOf(200, 260, 90))
+                pw.table(byWeek, columns = intArrayOf(140, 180, 80, 80))
                 pw.closePage()
 
                 doc.writeTo(bos)
