@@ -209,10 +209,15 @@ class MainActivity : Activity() {
         }
     }
 
-    // Back button / back gesture: close the drawer, then leave a submenu to the main menu.
+    // Back walks the stack: section → menu → home.
+    //  - Menu open (regardless of what's under it) → back = Home.
+    //  - In a section (Projects/Tasks/Settings) → back = reopen the menu.
+    //  - In a range-submenu (This week / pay period) → back = Home.
+    //  - Otherwise → platform handles it.
     override fun onBackPressed() {
         when {
-            drawerOpen -> closeDrawer()
+            drawerOpen -> { closeDrawer(); navScreen = 0; renderAll() }
+            navScreen == 1 || navScreen == 2 || navScreen == 3 -> openDrawer()
             navScreen != 0 -> { navScreen = 0; renderAll() }
             else -> @Suppress("DEPRECATION") super.onBackPressed()
         }
@@ -273,6 +278,13 @@ class MainActivity : Activity() {
     // Dialog theme so the native date/time pickers match the app UI accent colors.
     private fun pickerDialogThemeId(): Int =
         if (isDark) R.style.PickerDialogThemeDark else R.style.PickerDialogTheme
+
+    // Every picker menu (job, project actions, session form, theme, export range)
+    // is sized to match the Add Project dialog so they all feel the same. The
+    // Add Project fields are 320dp wide inside 28dp side padding, so content is
+    // 376dp — that's the anchor all other pickers copy. Lazy because dp() needs
+    // resources, which isn't ready at construction time.
+    private val PICKER_DIALOG_WIDTH: Int by lazy { dp(376) }
 
     private fun rounded(color: Int, radiusDp: Int): GradientDrawable {
         return GradientDrawable().apply {
@@ -1226,7 +1238,7 @@ private fun stopTimerNotification() {
             // Long-press: edit or delete.
             setOnLongClickListener {
                 val actions = arrayOf("Edit", "Delete", "Cancel")
-                AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+                val taskMenuDlg = AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                     .setTitle("${isoDateDisplay(session.date)}")
                     .setItems(actions) { _, w ->
                         when (actions[w]) {
@@ -1240,7 +1252,9 @@ private fun stopTimerNotification() {
                             else -> {}
                         }
                     }
-                    .show()
+                    .create()
+                taskMenuDlg.window?.setLayout(PICKER_DIALOG_WIDTH, ViewGroup.LayoutParams.WRAP_CONTENT)
+                taskMenuDlg.show()
                 true
             }
         }
@@ -2041,7 +2055,7 @@ private fun stopTimerNotification() {
                 }
                 setOnLongClickListener {
                     val actions = arrayOf("Edit", "Delete", "Cancel")
-                    AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+                    val projMenuDlg = AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                         .setTitle(site.name)
                         .setItems(actions) { _, w ->
                             when (actions[w]) {
@@ -2055,7 +2069,9 @@ private fun stopTimerNotification() {
                                 else -> {}
                             }
                         }
-                        .show()
+                        .create()
+                    projMenuDlg.window?.setLayout(PICKER_DIALOG_WIDTH, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    projMenuDlg.show()
                     true
                 }
             }.also { row ->
@@ -2128,7 +2144,7 @@ private fun stopTimerNotification() {
         val labels = arrayOf("Light", "Dark", "System (auto)")
         val modes = arrayOf("light", "dark", "system")
         var selected = when (themeMode) { "dark" -> 1; "light" -> 0; else -> 2 }
-        AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+        val themeDlg = AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
             .setTitle("Theme")
             .setSingleChoiceItems(labels, selected) { _, w -> selected = w }
             .setPositiveButton("OK") { _, _ ->
@@ -2139,7 +2155,9 @@ private fun stopTimerNotification() {
                 if (drawerOpen) openDrawer()
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        themeDlg.window?.setLayout(PICKER_DIALOG_WIDTH, ViewGroup.LayoutParams.WRAP_CONTENT)
+        themeDlg.show()
     }
 
     // ==================== DIALOGS ====================
@@ -2202,9 +2220,9 @@ private fun stopTimerNotification() {
         val employerLbl = TextView(this).apply { text = "Employer / client"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
         val wageLbl = TextView(this).apply { text = "Hourly wage ($)"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
         val driveLbl = TextView(this).apply { text = "Drive time per day (min)"; textSize = 12f; setTextColor(onSurfaceVariantColor) }
-        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, 0); minimumWidth = dp(360) }
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, 0); minimumWidth = PICKER_DIALOG_WIDTH }
         wrap.addView(fieldColumn(nameLbl, name, employerLbl, employer, wageLbl, wage, driveLbl, drive))
-        AlertDialog.Builder(this, pickerDialogThemeId())
+        val editDlg = AlertDialog.Builder(this, pickerDialogThemeId())
             .setTitle("Edit Project")
             .setView(wrap)
             .setPositiveButton("Save") { _, _ ->
@@ -2213,7 +2231,9 @@ private fun stopTimerNotification() {
                 else statusMessage = "Project name can't be empty"
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        editDlg.window?.setLayout(PICKER_DIALOG_WIDTH, ViewGroup.LayoutParams.WRAP_CONTENT)
+        editDlg.show()
     }
 
     // Built-in "Driving" project settings: set its hourly rate. Leave blank/0 to
@@ -2232,12 +2252,14 @@ private fun showDrivingSettings() {
     val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(4)) }
     wrap.addView(hint)
     wrap.addView(wage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
-    AlertDialog.Builder(this, pickerDialogThemeId())
+    val driveDlg = AlertDialog.Builder(this, pickerDialogThemeId())
         .setTitle("Driving")
         .setView(wrap)
         .setPositiveButton("Save") { _, _ -> setDrivingWage(wage.text.toString().trim()) }
         .setNegativeButton("Cancel", null)
-        .show()
+        .create()
+    driveDlg.window?.setLayout(PICKER_DIALOG_WIDTH, ViewGroup.LayoutParams.WRAP_CONTENT)
+    driveDlg.show()
     wage.requestFocus()
 }
 
@@ -2316,8 +2338,8 @@ private fun setDrivingWage(wage: String) {
             .setNegativeButton("Cancel") { _, _ -> renderAll() }
             .create()
         dlg.show()
-        // Roomy picker: wider than a default alert and tall enough for the cards.
-        dlg.window?.setLayout(dp(360), ViewGroup.LayoutParams.WRAP_CONTENT)
+        // Same width as Add Project so the picker list matches the other menus.
+        dlg.window?.setLayout(PICKER_DIALOG_WIDTH, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     // The job the user is working on; null if none chosen yet.
@@ -2402,6 +2424,12 @@ private fun setDrivingWage(wage: String) {
             }
         }
         val brk = EditText(this).apply { setText(initialBreak); setTextColor(onSurfaceColor); inputType = InputType.TYPE_CLASS_NUMBER }
+        // Same field width as the Add Project dialog (320dp) so this form fills
+        // the same box — the dialog then sizes to identical content.
+        date.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        start.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        end.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
+        brk.layoutParams = LinearLayout.LayoutParams(dp(320), dp(56))
 
         // project picker row
         val projNames = jobSites.map { it.name }.toTypedArray()
@@ -2409,14 +2437,16 @@ private fun setDrivingWage(wage: String) {
         if (selectedIdx < 0) selectedIdx = 0
         val projLbl = TextView(this).apply { text = "Project: ${jobSites.getOrNull(selectedIdx)?.name ?: "?"}"; textSize = 14f; setTextColor(primaryColor); setPadding(0, dp(6), 0, 0) }
         projLbl.setOnClickListener {
-            AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
+            val projSelDlg = AlertDialog.Builder(this@MainActivity, pickerDialogThemeId())
                 .setTitle("Select Project")
                 .setSingleChoiceItems(if (projNames.isEmpty()) arrayOf("No projects") else projNames, selectedIdx) { _, w -> selectedIdx = w }
                 .setPositiveButton("OK") { _, _ -> projLbl.text = "Project: ${jobSites.getOrNull(selectedIdx)?.name ?: "?"}" }
-                .show()
+                .create()
+            projSelDlg.window?.setLayout(PICKER_DIALOG_WIDTH, ViewGroup.LayoutParams.WRAP_CONTENT)
+            projSelDlg.show()
         }
 
-        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(4)) }
+        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(28), dp(8), dp(28), dp(4)) }
         fun addField(labelTxt: String, field: View) {
             form.addView(TextView(this).apply {
                 text = labelTxt; textSize = 12f; setTextColor(onSurfaceVariantColor)
@@ -2721,17 +2751,20 @@ private fun setDrivingWage(wage: String) {
             val opts = listOf(
                 "This week" to { presetRange("thisweek", share) },
                 "Last week" to { presetRange("lastweek", share) },
+                "Pay period ($payHeaderLabel)" to { exportRange(payPeriodStart, payPeriodEnd, share) },
                 "2 weeks from date…" to { showTwoWeekFromDatePicker(share) },
                 "All time" to { presetRange("all", share) },
                 "Custom range…" to { showCustomRangePicker(share) }
             )
-            AlertDialog.Builder(this, pickerDialogThemeId())
+            val exportDlg = AlertDialog.Builder(this, pickerDialogThemeId())
                 .setTitle(if (share) "Share PDF" else "Export")
                 .setItems(opts.map { it.first }.toTypedArray()) { _, which ->
                     opts[which].second()
                 }
                 .setNegativeButton("Cancel", null)
-                .show()
+                .create()
+            exportDlg.window?.setLayout(PICKER_DIALOG_WIDTH, ViewGroup.LayoutParams.WRAP_CONTENT)
+            exportDlg.show()
         }
 
         // Run a named preset and either save (share=false) or share (share=true).
