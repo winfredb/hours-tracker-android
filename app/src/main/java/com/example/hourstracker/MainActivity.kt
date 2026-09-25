@@ -3149,7 +3149,7 @@ private fun setDrivingWage(wage: String) {
             val opts = listOf(
                 "This week" to { presetRange("thisweek", share) },
                 "Last week" to { presetRange("lastweek", share) },
-                "Pay period ($payHeaderLabel)" to { exportRange(payPeriodStart, payPeriodEnd, share) },
+                "Pay period ($payHeaderLabel)" to { exportPayPeriodCard(share) },
                 "2 weeks from date…" to { showTwoWeekFromDatePicker(share) },
                 "All time" to { presetRange("all", share) },
                 "Custom range…" to { showCustomRangePicker(share) }
@@ -3314,6 +3314,81 @@ private fun setDrivingWage(wage: String) {
             renderAll()
         }
 
+        /**
+         * Exports the Office dashboard's Pay period card as a single-page PDF
+         * mirroring the exact layout of the dashboard `<aside>` card: the pay
+         * window + big total, Hours by project (with proportional bars), then
+         * Hours per week · OT over threshold · drive. Only the "Pay period"
+         * preset uses this renderer; other ranges keep the Summary/By Week PDF.
+         */
+        private fun exportPayPeriodCard(share: Boolean = false) {
+            try {
+                val from = payPeriodStart
+                val to = payPeriodEnd
+                val inRange = sessions.filter { it.date >= from && it.date <= to }
+                if (inRange.isEmpty()) { statusMessage = "No tasks in range"; renderAll(); return }
+                val siteName = { id: Int -> jobSites.find { it.id == id }?.name ?: "Unknown" }
+                val dayDrives = autoDriveByDay(inRange)
+
+                // Hours by project (work only, sorted desc) + proportional bar width.
+                val bySite = inRange.groupBy { it.jobSiteId }
+                    .map { (id, rows) -> Triple(siteName(id), rows.sumOf { workedMinutes(it) }, id) }
+                    .sortedByDescending { it.second }
+                val projRows = mutableListOf<List<String>>()
+                val pmax = bySite.map { it.second }.maxOrNull() ?: 1
+                bySite.forEach { projRows.add(listOf(it.first, hhMm(it.second), (it.second.toFloat() / pmax).toString())) }
+
+                // Per calendar week (Sunday start): total folds in drive for OT,
+                // project rows are work-only, plus a Drive row when present.
+                val weekBlocks = mutableListOf<Pair<String, MutableList<List<String>>>>()
+                val byWeek = inRange.groupBy { sundayOf(it.date) }.toSortedMap()
+                val thresholdMin = (overtimeThresholdHours * 60).toInt()
+                byWeek.forEach { (w, rows) ->
+                    val weekDates = rows.map { it.date }.toSet()
+                    val work = rows.sumOf { workedMinutes(it) }
+                    var weekDrive = 0
+                    dayDrives.forEach { (date, pd) -> if (date in weekDates) weekDrive += pd.second }
+                    val total = work + weekDrive
+                    val ot = (total - minOf(total, thresholdMin)).coerceAtLeast(0)
+                    val wProj: MutableList<List<String>> = mutableListOf()
+                    val wBySite = rows.groupBy { it.jobSiteId }
+                        .map { (id, r) -> Triple(siteName(id), r.sumOf { workedMinutes(it) }, id) }
+                        .sortedByDescending { it.second }
+                    val wmax = wBySite.map { it.second }.maxOrNull() ?: 1
+                    wBySite.forEach { wProj.add(listOf(it.first, hhMm(it.second), (it.second.toFloat() / wmax).toString())) }
+                    if (weekDrive > 0) wProj.add(listOf("Drive", hhMm(weekDrive), (weekDrive.toFloat() / wmax).toString()))
+                    wProj.add(0, listOf("★ TOTAL", hhMm(total), if (ot > 0) "OT ${hhMm(ot)}" else ""))
+                    weekBlocks.add(w to wProj)
+                }
+
+                val label = "${from}_to_${to}"
+                val pdfUri = writeDownload("Export", "PayPeriod_$label.pdf",
+                    buildPayCardPdf(from, to, projRows, weekBlocks))
+                val filename = "PayPeriod_$label.pdf"
+                if (share) {
+                    statusMessage = "Preparing pay period for sharing…"
+                    shareFile(filename, pdfUri)
+                    renderAll()
+                    return
+                }
+                statusMessage = "Exported pay period (pdf) ✓"
+                AlertDialog.Builder(this, pickerDialogThemeId())
+                    .setTitle("Export complete ✓")
+                    .setMessage("Saved:\n• ${ExportFile.rootLabel(this@MainActivity, prefs)}/Export/PayPeriod_$label.pdf\n\nMatches the Office dashboard's Pay period card.")
+                    .setPositiveButton("OK", null)
+                    .setNeutralButton("Share", { _, _ -> shareFile(filename, pdfUri) })
+                    .show()
+            } catch (e: Exception) {
+                statusMessage = "Export FAILED: ${e.message}"
+                AlertDialog.Builder(this, pickerDialogThemeId())
+                    .setTitle("Export failed")
+                    .setMessage(e.message ?: "Unknown error")
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+            renderAll()
+        }
+
         // ISO date string for the Sunday of the week containing the given ISO date.
         private fun sundayOf(isoDate: String): String =
                 LocalDate.parse(isoDate).with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.SUNDAY)).toString()
@@ -3351,7 +3426,61 @@ private fun setDrivingWage(wage: String) {
             return bos.toByteArray()
         }
 
-        /** Helper to lay out content on PdfDocument pages with simple pagination. */
+        /**
+         * Renders the Office dashboard's Pay period card onto PDF page(s): a big
+         * total, Hours by project with proportional bars, then Hours per week
+         * with a per-week total/OT line and the week's project + drive rows.
+         * Mirrors the dashboard `<aside>` card.
+         */
+        private fun buildPayCardPdf(from: String, to: String, projRows: List<List<String>>, weekBlocks: List<Pair<String, MutableList<List<String>>>>): ByteArray {
+            val doc = PdfDocument()
+            val pageInfo = PdfDocument.PageInfo.Builder(612, 792, 1).create()
+            val bos = ByteArrayOutputStream()
+            try {
+                var pw = PdfPageWriter(doc, pageInfo)
+                pw = pw.newPage()
+                pw.heading("Pay period")
+                pw.subhead("${mmdd(from)} – ${mmdd(to)} · ${daysBetween(from, to)} days")
+                pw.space()
+
+                val grand = projRows.sumOf { toMinutes(it[1]) }
+                pw.big("${hhMm(grand)} hrs")
+                pw.space()
+
+                pw.section("Hours by project")
+                pw.barList(projRows)
+                pw.space()
+
+                pw.section("Hours per week · OT over ${overtimeThresholdHours.toInt()}h · drive")
+                weekBlocks.forEachIndexed { bi, block ->
+                    val (w, rows) = block
+                    val total = rows.first()[1]
+                    val ot = rows.first()[2]
+                    pw.weekHeading("Week of ${mmdd(w)}", total, ot)
+                    pw.barList(rows.drop(1))
+                    if (bi < weekBlocks.size - 1) pw.space()
+                }
+                pw.closePage()
+
+                doc.writeTo(bos)
+            } finally {
+                doc.close()
+            }
+            return bos.toByteArray()
+        }
+
+        private fun mmdd(iso: String): String {
+            val d = LocalDate.parse(iso)
+            return "${String.format(Locale.US, "%02d", d.monthValue)}/${String.format(Locale.US, "%02d", d.dayOfMonth)}"
+        }
+
+        private fun daysBetween(from: String, to: String): Long =
+            java.time.temporal.ChronoUnit.DAYS.between(LocalDate.parse(from), LocalDate.parse(to)) + 1
+
+        private fun toMinutes(hhmm: String): Int {
+            val p = hhmm.split(":")
+            return (p.getOrNull(0)?.toIntOrNull() ?: 0) * 60 + (p.getOrNull(1)?.toIntOrNull() ?: 0)
+        }
         private inner class PdfPageWriter(private val doc: PdfDocument, private val pageInfo: PdfDocument.PageInfo) {
             private var canvas: Canvas? = null
             private var page: PdfDocument.Page? = null
@@ -3382,6 +3511,61 @@ private fun setDrivingWage(wage: String) {
             fun heading(t: String) { canvas?.drawText(t, leftMargin, y, title); y += 26f }
             fun subhead(t: String) { canvas?.drawText(t, leftMargin, y, sub); y += 18f }
             fun space() { y += 10f }
+
+            // ---- Pay period card primitives ----
+            private val bigPaint = Paint().apply { color = Color.BLACK; textSize = 34f; isFakeBoldText = true }
+            private val sectionPaint = Paint().apply { color = Color.DKGRAY; textSize = 11f; isFakeBoldText = true }
+            private val trackPaint = Paint().apply { color = 0xFFE9E9EF.toInt(); style = Paint.Style.FILL }
+            private val fillPaint = Paint().apply { color = 0xFF059669.toInt(); style = Paint.Style.FILL }
+            private val barText = Paint().apply { color = Color.BLACK; textSize = 11f }
+            private val barValue = Paint().apply { color = Color.BLACK; textSize = 11f; isFakeBoldText = true }
+
+            fun big(t: String) { canvas?.drawText(t, leftMargin, y, bigPaint); y += 34f }
+
+            fun section(t: String) { canvas?.drawText(t, leftMargin, y, sectionPaint); y += 18f }
+
+            /**
+             * Renders one [name, hhmm, fraction?] row as a left label + a
+             * proportional green bar + a right-aligned hh:mm value. Mirrors the
+             * dashboard's `.pprow`/`.wproj` rows. fraction is a "0..1" string, or
+             * empty to render a plain text row (no bar) when values are all zero.
+             */
+            fun barList(rows: List<List<String>>) {
+                val labelW = 150f
+                val barX = leftMargin + labelW
+                val barMaxW = pageInfo.pageWidth.toFloat() - barX - rightMargin - 70f
+                rows.forEach { row ->
+                    ensureSpace(rowH)
+                    val name = row.getOrNull(0) ?: ""
+                    val value = row.getOrNull(1) ?: ""
+                    val frac = row.getOrNull(2)?.toFloatOrNull()
+                    canvas?.drawText(name, leftMargin, y, barText)
+                    if (frac != null && frac > 0f) {
+                        val w = (barMaxW * frac.coerceIn(0f, 1f)).coerceAtLeast(4f)
+                        canvas?.drawRect(barX, y - 11, barX + barMaxW, y + 1, trackPaint)
+                        canvas?.drawRect(barX, y - 11, barX + w, y + 1, fillPaint)
+                    }
+                    val tw = barValue.measureText(value)
+                    canvas?.drawText(value, pageInfo.pageWidth.toFloat() - rightMargin - tw, y, barValue)
+                    y += rowH
+                }
+            }
+
+            /** Week heading line: left label, OT badge (if any), right total. */
+            fun weekHeading(label: String, total: String, ot: String) {
+                ensureSpace(26f)
+                canvas?.drawText(label, leftMargin, y, sub)
+                var rightX = pageInfo.pageWidth.toFloat() - rightMargin
+                val tw = barValue.measureText(total)
+                canvas?.drawText(total, rightX - tw, y, barValue)
+                rightX -= (tw + 14f)
+                if (!ot.isBlank()) {
+                    val otw = barText.measureText(ot)
+                    canvas?.drawText(ot, rightX - otw, y, barText)
+                }
+                canvas?.drawLine(leftMargin, y + 3, pageInfo.pageWidth.toFloat() - rightMargin, y + 3, rule)
+                y += 24f
+            }
 
             fun table(rows: List<List<String>>, columns: IntArray) {
                 var totalW = 0f
