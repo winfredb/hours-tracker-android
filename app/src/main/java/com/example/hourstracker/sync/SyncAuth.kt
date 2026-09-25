@@ -58,6 +58,50 @@ class SyncAuth(
     fun currentName(): String? = store.name
     fun currentUserId(): String? = store.userId
 
+    /**
+     * Change the signed-in user's password.
+     *
+     * PocketBase (this version) has no `/change-password` route — the way a
+     * logged-in worker changes their own password is a PATCH to their own user
+     * record carrying the existing password plus the new one. Verified live:
+     *   PATCH /api/collections/users/records/{id}
+     *   { oldPassword, password, passwordConfirm }  (auth: worker's JWT)
+     *
+     * A correct old password → 200 and the old password stops working; a wrong
+     * one → HTTP 400. A STALE/expired token yields HTTP 404 (PocketBase hides
+     * the record from an unauthenticated caller), so we re-authenticate with
+     * the email + the current password the user just typed to mint a FRESH
+     * token first — this both validates the old password and guarantees the
+     * PATCH carries a live token. Nothing is persisted client-side (the user's
+     * stored token is untouched; the server stores only the hash).
+     */
+    fun changePassword(oldPassword: String, newPassword: String): Boolean {
+        val email = store.email ?: throw SyncException("Not signed in")
+        val uid = store.userId ?: throw SyncException("Not signed in")
+
+        // Fresh token from the entered password validates it and avoids the
+        // server's 404-on-stale-token behaviour.
+        val authResp = try {
+            api.post(SyncConfig.PATH_USER_AUTH, JSONObject()
+                .put("identity", email)
+                .put("password", oldPassword))
+        } catch (e: SyncException) {
+            // 400 = wrong current password (most common); anything else is a
+            // reachability issue. Translate to a human message.
+            if (e.code == 400) throw SyncException("Current password is incorrect")
+            else throw e
+        }
+        val token = authResp.optString("token").takeIf { it.isNotEmpty() }
+            ?: throw SyncException("Current password is incorrect")
+
+        val body = JSONObject()
+            .put("oldPassword", oldPassword)
+            .put("password", newPassword)
+            .put("passwordConfirm", newPassword)
+        api.patch("${SyncConfig.PATH_USERS_RECORDS}/$uid", body, token)
+        return true
+    }
+
     /** Forget the stored token + identity. */
     fun logout() = store.clear()
 }

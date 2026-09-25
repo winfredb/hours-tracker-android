@@ -1138,6 +1138,102 @@ private fun stopTimerNotification() {
         }.start()
     }
 
+    /**
+     * Change-password flow. Built as a dialog with three password fields
+     * (current / new / confirm). Uploads via SyncAuth.changePassword on a
+     * background thread (matches runSync/attemptLogin), then reports the
+     * outcome on the main thread via statusMessage. Local validation first:
+     * new == confirm, new != current, new length >= 8.
+     */
+    private fun showChangePasswordDialog() {
+        val current = EditText(this).apply {
+            textSize = 16f; setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            hint = "Current password"; setSingleLine(true)
+            background = roundedField()
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56))
+        }
+        val fresh = EditText(this).apply {
+            textSize = 16f; setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            hint = "New password (8+ chars)"; setSingleLine(true)
+            background = roundedField()
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56))
+        }
+        val confirm = EditText(this).apply {
+            textSize = 16f; setTextColor(onSurfaceColor); setHintTextColor(onSurfaceVariantColor)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            hint = "Confirm new password"; setSingleLine(true)
+            background = roundedField()
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(56))
+        }
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(8), dp(4), 0)
+            addView(current)
+            // tiny vertical gap between fields
+            addView(LinearLayout(this@MainActivity).apply { setPadding(0, 0, 0, 0) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(10)))
+            addView(fresh)
+            addView(LinearLayout(this@MainActivity).apply { setPadding(0, 0, 0, 0) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(10)))
+            addView(confirm)
+        }
+        val dialog = AlertDialog.Builder(this, pickerDialogThemeId())
+            .setTitle("Change password")
+            .setMessage("Enter your current password and a new one. You'll use the new one to sign in from now on.")
+            .setView(fields)
+            .setPositiveButton("Change", null) // set below to prevent auto-dismiss
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val cur = current.text.toString()
+                val neu = fresh.text.toString()
+                val con = confirm.text.toString()
+                val err = when {
+                    cur.isEmpty() -> "Enter your current password."
+                    neu.length < 8 -> "New password must be at least 8 characters."
+                    neu == cur -> "New password must differ from the current one."
+                    neu != con -> "New passwords don't match."
+                    else -> null
+                }
+                if (err != null) {
+                    // Local validation failed: toast it (statusMessage only
+                    // shows on Home, not here on Settings) and keep the dialog
+                    // open so they can correct it.
+                    android.widget.Toast.makeText(this, err, android.widget.Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                // Valid: dismiss NOW, then do the blocking network call off the
+                // main thread and report with a Toast (visible on any screen).
+                // Never renderAll() while the dialog is still up (that can
+                // throw and leave it frozen).
+                dialog.dismiss()
+                Thread {
+                    val result = try {
+                        changePw(cur, neu)
+                    } catch (e: com.example.hourstracker.sync.SyncException) {
+                        "Couldn't change password: ${e.message}"
+                    } catch (e: Exception) {
+                        "Couldn't change password: ${e.message}"
+                    }
+                    mainHandler.post {
+                        android.widget.Toast.makeText(this@MainActivity, result, android.widget.Toast.LENGTH_LONG).show()
+                        statusMessage = result
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
+    }
+
+    /** Blocking helper: SyncAuth.changePassword on a background thread wire. */
+    private fun changePw(current: String, fresh: String): String {
+        syncAuth.changePassword(current, fresh)
+        return "Password updated."
+    }
+
     private fun buildLoginScreen() {
         val topPad = statusBarTop + dp(24)
         val root = FrameLayout(this).apply {
@@ -1781,12 +1877,13 @@ private fun stopTimerNotification() {
         if (isLoggedIn()) {
             accountRows.add(settingsRowValue("Signed in as", syncAuth.currentEmail() ?: "—") { infoDialog("Account", "Syncing as ${syncAuth.currentEmail() ?: "a worker"}.\n\nYour clocked hours are uploaded to the office backend from this account.") })
             accountRows.add(settingsRowValue("Sync now", "") { runSync() })
+            accountRows.add(settingsRowValue("Change password", "") { showChangePasswordDialog() })
             accountRows.add(settingsRowValue("Sign out", "") { confirmLogout() })
         } else {
             accountRows.add(settingsRowValue("Not signed in", "Offline") { showLogin = true; renderAll() })
             accountRows.add(settingsRowValue("Sign in", "For sync") { showLogin = true; renderAll() })
         }
-        col.addView(settingsGroup("Account", accountRows))
+        val accountGroup = settingsGroup("Account", accountRows)
 
         // ---- Overtime: numeric fields apply immediately (no Save button) ----
         val th = EditText(this).apply {
@@ -1851,6 +1948,9 @@ private fun stopTimerNotification() {
             text = "Backups save to:\n${ExportFile.rootLabel(this@MainActivity, prefs)}/Backup\nChecks, PDFs, and backups all live in this folder. Copy backups off this phone (share, Drive, email) so they survive losing the device."
             textSize = 11f; setTextColor(onSurfaceVariantColor); setPadding(dp(4), dp(8), dp(4), dp(8))
         })
+
+        // ---- Account: at the bottom of Settings (moved here) ----
+        col.addView(accountGroup)
         return col
     }
 

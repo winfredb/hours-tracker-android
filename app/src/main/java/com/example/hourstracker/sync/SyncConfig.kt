@@ -24,6 +24,7 @@ object SyncConfig {
 
     /** PocketBase REST paths (no leading/trailing slashes). */
     const val PATH_USER_AUTH = "api/collections/users/auth-with-password"
+    const val PATH_USERS_RECORDS = "api/collections/users/records"
     const val PATH_HEALTH = "api/health"
     const val PATH_TIME_ENTRIES = "api/collections/time_entries/records"
     const val PATH_PROJECTS = "api/collections/projects/records"
