@@ -35,6 +35,7 @@ import android.widget.TextView
 import android.provider.MediaStore
 import com.example.hourstracker.model.JobSite
 import com.example.hourstracker.model.WorkSession
+import com.example.hourstracker.sync.SyncEngine
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.DayOfWeek
@@ -52,6 +53,18 @@ class MainActivity : Activity() {
     private lateinit var prefs: SharedPreferences
     private var isDark = false
     private var themeMode = "system" // "light" | "dark" | "system"
+
+    // Backend auth (worker login against the PocketBase server). Keystone-backed
+    // token store + the auth client. Lazily-created, BLOCKING calls — always run
+    // off the main thread.
+    private lateinit var authStore: com.example.hourstracker.sync.AuthStore
+    private lateinit var syncAuth: com.example.hourstracker.sync.SyncAuth
+    // Login in progress flag keeps the button from double-firing while a request
+    // is out. Sign-in/Sign-out is optional: the app is usable fully offline
+    // without an account. showLogin forces the login screen when the user opts
+    // into syncing from Settings; it's dismissible ("Maybe later").
+    private var loginInProgress = false
+    private var showLogin = false
 
     private var clockRunning = false
     private var clockPaused = false
@@ -102,8 +115,10 @@ class MainActivity : Activity() {
     // timer runs (week / pay period hours + pay).
     private var weekTotalsView: TextView? = null
     private var weekPayView: TextView? = null
+    private var weekOtView: TextView? = null
     private var periodTotalsView: TextView? = null
     private var periodPayView: TextView? = null
+    private var periodOtView: TextView? = null
 
     // Built-in project name for clocking drive time (see ensureDrivingProject).
     private val DRIVING_NAME = "Driving"
@@ -112,6 +127,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         db = HoursDb(this)
         prefs = getSharedPreferences("hours_tracker", Context.MODE_PRIVATE)
+        authStore = com.example.hourstracker.sync.AuthStore(this)
+        syncAuth = com.example.hourstracker.sync.SyncAuth(store = authStore)
         themeMode = prefs.getString("theme", "system") ?: "system"
         isDark = resolveDark()
         // Notifications are hidden on Android 13+ unless the user grants
@@ -620,7 +637,7 @@ class MainActivity : Activity() {
      * the threshold) and is priced at the active job's wage. Used to repaint the
      * home report cards as the clock ticks.
      */
-    private fun liveRangeSummary(from: String, to: String): Pair<Int, Double> {
+    private fun liveRangeSummary(from: String, to: String): Quad {
         val live = buildList {
             if (clockRunning && activeJobId >= 0) {
                 val today = LocalDate.now().toString()
@@ -630,8 +647,7 @@ class MainActivity : Activity() {
                 }
             }
         }
-        val q = rangeSummary(from, to, live)
-        return q.totalMin to (q.basePay + q.otPay)
+        return rangeSummary(from, to, live)
     }
 
     // A bare-bones session whose workedMinutes() (00:00 → liveMin minutes, no
@@ -699,6 +715,9 @@ class MainActivity : Activity() {
             return
         }
         refreshData()
+        // Auto-sync the just-booked session to the backend if the worker is
+        // signed in (else it simply stays queued for "Sync now" later).
+        if (syncAuth.isLoggedIn()) runSync()
         // No file is written here. Saving a task used to rewrite the project's
         // .xlsx on the main thread; the database is the record of truth and
         // backups (.json) are on demand, so a save is now purely a DB write.
@@ -922,6 +941,14 @@ private fun stopTimerNotification() {
     }
 
     private fun buildLayout() {
+        // Show the login screen on first launch OR when the user opens it from
+        // Settings. It's not a hard gate: "Use without signing in" dismisses it
+        // (remembered), so the app is fully usable offline with no account.
+        val forceLogin = showLogin || (!isLoggedIn() && !hasSkippedLogin())
+        if (forceLogin) {
+            buildLoginScreen()
+            return
+        }
         val topPad = statusBarTop + dp(18)
         val root = FrameLayout(this).apply { setBackgroundColor(bgColor); setPadding(0, topPad, 0, 0) }
 
@@ -989,6 +1016,254 @@ private fun stopTimerNotification() {
         // widget-driven changes and rebuild only when needed.
         builtStateSig = stateSig()
     }
+
+    // ==================== LOGIN ====================
+
+    private fun isLoggedIn(): Boolean = syncAuth.isLoggedIn()
+
+    // Whether the worker chose "Use without signing in" on a prior launch. Once
+    // dismissed, login is never forced again (Settings → Sign in reopens it).
+    private fun hasSkippedLogin(): Boolean =
+        prefs.getBoolean("hr_skipped_login", false)
+
+    private fun markSkippedLogin() {
+        prefs.edit().putBoolean("hr_skipped_login", true).apply()
+    }
+
+    /** Sign the worker out and return to the app (offline mode). Called from Settings. */
+    private fun doLogout() {
+        syncAuth.logout()
+        loginInProgress = false
+        showLogin = false
+        navScreen = 0
+        renderAll()
+    }
+
+    /** Confirm before signing out — drops the saved token. */
+    private fun confirmLogout() {
+        AlertDialog.Builder(this, pickerDialogThemeId())
+            .setTitle("Sign out?")
+            .setMessage("You'll stop syncing hours to the office. Your local data stays on this phone; you can sign back in anytime.")
+            .setPositiveButton("Sign out") { _, _ -> doLogout() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Dismiss the login screen and use the app without an account (rounded remembered). */
+    private fun skipLogin() {
+        showLogin = false
+        markSkippedLogin()
+        navScreen = 0
+        renderAll()
+    }
+
+    // Blocking worker login on a background thread, then re-render the app into
+    // view. Errors (wrong password, server down) are surfaced on the error label.
+    private fun attemptLogin(email: String, password: String, errorLabel: TextView, btn: Button) {
+        if (loginInProgress) return
+        loginInProgress = true
+        btn.isEnabled = false
+        setLoginError(errorLabel, null)
+        Thread {
+            val ok = try {
+                syncAuth.login(email, password)
+            } catch (e: Exception) {
+                null
+            }
+            mainHandler.post {
+                loginInProgress = false
+                btn.isEnabled = true
+                when {
+                    ok == true -> {
+                        setLoginError(errorLabel, null)
+                        showLogin = false
+                        markSkippedLogin()   // signed in: never force login again
+                        renderAll()
+                        // Restore/merge this worker's server-side history onto
+                        // this device (new phone, reinstall, or office edits).
+                        runSync()
+                    }
+                    ok == null -> {
+                        // Network / server unreachable vs wrong credentials
+                        setLoginError(errorLabel, "Couldn't reach the server. Check your connection.")
+                    }
+                    else -> {
+                        setLoginError(errorLabel, "Incorrect email or password.")
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /** Show [text] on the error label (GONE when null). */
+    private fun setLoginError(errorLabel: TextView, text: String?) {
+        errorLabel.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
+        errorLabel.text = text ?: ""
+    }
+
+    /**
+     * Full two-way sync (off the main thread), then report via [statusMessage]:
+     * pushes unsynced local sessions UP to the backend and pulls any server
+     * entries that aren't local yet DOWN (restore/merge — idempotent). Safe to
+     * call whenever signed in; no-ops (silently) if not logged in.
+     */
+    private fun runSync() {
+        val tok = syncAuth.token()
+        val uid = syncAuth.currentUserId()
+        if (tok == null || uid == null) {
+            statusMessage = "Not signed in — hours aren't syncing."
+            renderAll()
+            return
+        }
+        val dbh = db
+        Thread {
+            val msg = try {
+                val engine = SyncEngine(dbh, token = tok, workerUserId = uid)
+                val pushed = engine.sync()
+                val pulled = engine.pull()
+                when {
+                    pushed == "Nothing to sync." && pulled == "Nothing new on the server." ->
+                        "Up to date."
+                    else -> "$pushed $pulled".trim()
+                }
+            } catch (e: com.example.hourstracker.sync.SyncException) {
+                "Sync failed: ${e.message}"
+            } catch (e: Exception) {
+                "Sync failed: ${e.message}"
+            }
+            mainHandler.post {
+                statusMessage = msg
+                renderAll()
+            }
+        }.start()
+    }
+
+    private fun buildLoginScreen() {
+        val topPad = statusBarTop + dp(24)
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(bgColor)
+            setPadding(dp(24), topPad, dp(24), dp(24))
+        }
+
+        // Scroll so the form survives small screens / keyboard.
+        val scroll = ScrollView(this)
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        scroll.addView(form)
+        root.addView(scroll)
+
+        // ---- Brand ----  (matches the app header: upper-case day slug + title)
+        form.addView(TextView(this).apply {
+            text = "HOURS TRACKER"
+            textSize = 12f
+            letterSpacing = 0.12f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(primaryColor)
+        })
+        form.addView(TextView(this).apply {
+            text = "Sign in"
+            textSize = 28f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor)
+            setPadding(0, dp(4), 0, 0)
+        })
+        form.addView(TextView(this).apply {
+            text = "Sign in so your hours sync to the office. You can skip this and use the app offline."
+            textSize = 14f
+            setTextColor(onSurfaceVariantColor)
+            setPadding(0, dp(2), 0, dp(24))
+        })
+
+        // ---- Email ----
+        form.addView(TextView(this).apply {
+            text = "Email"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor)
+        })
+        val emailField = EditText(this).apply {
+            hint = "you@company.com"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            setSingleLine(true)
+            textSize = 16f
+            setTextColor(onSurfaceColor)
+            setHintTextColor(onSurfaceVariantColor)
+            background = roundedField()
+        }
+        form.addView(emailField, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(6) })
+
+        // ---- Password ----
+        form.addView(TextView(this).apply {
+            text = "Password"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceColor)
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) }
+        })
+        val passwordField = EditText(this).apply {
+            hint = "••••••••"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine(true)
+            textSize = 16f
+            setTextColor(onSurfaceColor)
+            setHintTextColor(onSurfaceVariantColor)
+            background = roundedField()
+        }
+        form.addView(passwordField, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(6) })
+
+        // ---- Error ----
+        val errorLabel = TextView(this).apply {
+            textSize = 13f
+            setTextColor(errorColor)
+            visibility = View.GONE
+        }
+        form.addView(errorLabel, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+
+        // ---- Sign-in button ----
+        val btn = Button(this).apply {
+            text = "Sign in"
+            isAllCaps = true
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            background = rounded(primaryColor, 12)
+        }
+        form.addView(btn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply { topMargin = dp(20) })
+
+        // Manual sign-in then re-render (now authenticated).
+        btn.setOnClickListener {
+            val email = emailField.text.toString().trim()
+            val pw = passwordField.text.toString()
+            attemptLogin(email, pw, errorLabel, btn)
+        }
+
+        // ---- Use without signing in (optional access) ----
+        form.addView(TextView(this).apply {
+            text = "Use without signing in"
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(onSurfaceVariantColor)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(0), 0, dp(0))
+            isClickable = true
+            setOnClickListener { skipLogin() }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply { topMargin = dp(4) })
+
+        setContentView(root)
+        builtStateSig = stateSig()
+    }
+
+    // Rounded input field fill (surface-container tone with a 1dp outline).
+    private fun roundedField(): GradientDrawable =
+        GradientDrawable().apply {
+            setShape(GradientDrawable.RECTANGLE)
+            setColor(surfaceContainerColor)
+            setCornerRadius(dp(12).toFloat())
+            setStroke(dp(1), outlineColor)
+            setPadding(dp(14), 0, dp(14), 0)
+        }
 
     // Home screen (Direction C: Modern Tonal Stack): header + hero card + summary cards.
     private fun buildHomeScreen(column: LinearLayout) {
@@ -1198,14 +1473,16 @@ private fun stopTimerNotification() {
     private fun updateReportViews() {
         if (weekTotalsView != null || weekPayView != null) {
             val sunday = sundayOf(LocalDate.now().toString())
-            val (tm, p) = liveRangeSummary(sunday, LocalDate.parse(sunday).plusDays(6).toString())
-            weekTotalsView?.text = formatMinutesShort(tm)
-            weekPayView?.text = "$${String.format(Locale.US, "%.2f", p)}"
+            val q = liveRangeSummary(sunday, LocalDate.parse(sunday).plusDays(6).toString())
+            weekTotalsView?.text = formatMinutesShort(q.totalMin)
+            weekPayView?.text = "$${String.format(Locale.US, "%.2f", q.basePay + q.otPay)}"
+            weekOtView?.text = "OT ${formatMinutesShort(q.otMin)}"
         }
         if (periodTotalsView != null || periodPayView != null) {
-            val (tm, p) = liveRangeSummary(payPeriodStart, payPeriodEnd)
-            periodTotalsView?.text = formatMinutesShort(tm)
-            periodPayView?.text = "$${String.format(Locale.US, "%.2f", p)}"
+            val q = liveRangeSummary(payPeriodStart, payPeriodEnd)
+            periodTotalsView?.text = formatMinutesShort(q.totalMin)
+            periodPayView?.text = "$${String.format(Locale.US, "%.2f", q.basePay + q.otPay)}"
+            periodOtView?.text = "OT ${formatMinutesShort(q.otMin)}"
         }
     }
 
@@ -1415,6 +1692,15 @@ private fun stopTimerNotification() {
                 if (kind == 1) weekPayView = this
                 else if (kind == 2) periodPayView = this
             })
+            // Accrued overtime for the range, shown below the pay so both cards
+            // expose the running OT total (updated live with the timer via the OT
+            // view handles).
+            valCol.addView(TextView(this).apply {
+                text = "OT ${formatMinutesShort(s.otMin)}"
+                textSize = 11f; setTextColor(if (isDark) 0xFFF59E0B.toInt() else 0xFFD97706.toInt()); gravity = Gravity.END
+                if (kind == 1) weekOtView = this
+                else if (kind == 2) periodOtView = this
+            })
             card.addView(valCol, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             return card
         }
@@ -1489,6 +1775,18 @@ private fun stopTimerNotification() {
 
     private fun buildSettingsTab(): View {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        // ---- Account: sign-in status + action ----
+        val accountRows = mutableListOf<View>()
+        if (isLoggedIn()) {
+            accountRows.add(settingsRowValue("Signed in as", syncAuth.currentEmail() ?: "—") { infoDialog("Account", "Syncing as ${syncAuth.currentEmail() ?: "a worker"}.\n\nYour clocked hours are uploaded to the office backend from this account.") })
+            accountRows.add(settingsRowValue("Sync now", "") { runSync() })
+            accountRows.add(settingsRowValue("Sign out", "") { confirmLogout() })
+        } else {
+            accountRows.add(settingsRowValue("Not signed in", "Offline") { showLogin = true; renderAll() })
+            accountRows.add(settingsRowValue("Sign in", "For sync") { showLogin = true; renderAll() })
+        }
+        col.addView(settingsGroup("Account", accountRows))
 
         // ---- Overtime: numeric fields apply immediately (no Save button) ----
         val th = EditText(this).apply {

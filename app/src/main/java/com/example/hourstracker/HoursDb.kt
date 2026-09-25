@@ -8,7 +8,7 @@ import android.database.sqlite.SQLiteOpenHelper
  * Native SQLite store for HoursTracker. Mirrors the Room schema exactly so
  * exported data is identical to the Compose version.
  */
-class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", null, 5) {
+class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", null, 6) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -21,7 +21,8 @@ class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", 
                 "overtime_start REAL, " +
                 "overtime_rate REAL, " +
                 "color TEXT NOT NULL DEFAULT '#6750A4', " +
-                "drive_minutes INTEGER NOT NULL DEFAULT 0)"
+                "drive_minutes INTEGER NOT NULL DEFAULT 0, " +
+                "server_id TEXT)"
         )
         db.execSQL(
             "CREATE TABLE work_sessions (" +
@@ -31,7 +32,8 @@ class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", 
                 "start_time TEXT NOT NULL, " +
                 "end_time TEXT NOT NULL, " +
                 "break_minutes INTEGER NOT NULL DEFAULT 0, " +
-                "notes TEXT)"
+                "notes TEXT, " +
+                "server_id TEXT)"
         )
     }
 
@@ -48,6 +50,12 @@ class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", 
         }
         if (oldVersion < 5) {
             try { db.execSQL("ALTER TABLE job_sites ADD COLUMN drive_minutes INTEGER NOT NULL DEFAULT 0") } catch (e: Exception) {}
+        }
+        if (oldVersion < 6) {
+            // Sync: server record id for each local row once it's pushed. NULL
+            // (= not yet synced) is the retry-queue marker for work_sessions.
+            try { db.execSQL("ALTER TABLE job_sites ADD COLUMN server_id TEXT") } catch (e: Exception) {}
+            try { db.execSQL("ALTER TABLE work_sessions ADD COLUMN server_id TEXT") } catch (e: Exception) {}
         }
     }
 }
