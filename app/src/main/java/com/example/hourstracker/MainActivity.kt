@@ -1832,9 +1832,7 @@ private fun stopTimerNotification() {
                 if (kind == 1) weekOtView = this
                 else if (kind == 2) periodOtView = this
             })
-            card.addView(valCol, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                rightMargin = dp(14)
-            })
+            card.addView(valCol, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             return card
         }
 
