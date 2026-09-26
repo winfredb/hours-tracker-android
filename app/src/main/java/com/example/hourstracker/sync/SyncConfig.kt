@@ -14,13 +14,8 @@ package com.example.hourstracker.sync
 object SyncConfig {
 
     /** Public HTTPS funnel URL — use this for production/remote sync. */
-    const val BASE_URL_PUBLIC = "https://zimaos.taild49c7f.ts.net"
+    const val BASE_URL = "https://zimaos.taild49c7f.ts.net"
 
-    /** LAN HTTP URL — for local testing only; requires cleartext traffic. */
-    const val BASE_URL_LAN = "http://192.168.5.33:8090"
-
-    /** Which base URL the app currently talks to. */
-    const val BASE_URL = BASE_URL_PUBLIC
 
     /** PocketBase REST paths (no leading/trailing slashes). */
     const val PATH_USER_AUTH = "api/collections/users/auth-with-password"

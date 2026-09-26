@@ -65,6 +65,10 @@ class MainActivity : Activity() {
     // into syncing from Settings; it's dismissible ("Maybe later").
     private var loginInProgress = false
     private var showLogin = false
+    // Guards against overlapping background syncs: only one sync thread may run
+    // at a time (each task-save fires runSync; without this, back-to-back saves
+    // could slam the shared SQLite connection with two writers at once).
+    private var syncRunning = false
 
     private var clockRunning = false
     private var clockPaused = false
@@ -368,7 +372,7 @@ class MainActivity : Activity() {
                 cv.put("name", DRIVING_NAME)
                 cv.put("location", "Commute")
                 cv.put("color", "#0284C7")
-                drv.insert("job_sites", null, cv)
+                HoursDb.lockRun { drv.insert("job_sites", null, cv) }
             } catch (t: Throwable) { }
         }
     }
@@ -378,11 +382,13 @@ class MainActivity : Activity() {
     // exactly "HH:MM"; anything else is unreadable noise, so drop it.
     private fun repairJunkSessions() {
         try {
-            db.writableDatabase.delete(
-                "work_sessions",
-                "start_time NOT LIKE '__:__' OR end_time NOT LIKE '__:__' OR date NOT LIKE '____-__-__'",
-                null
-            )
+            HoursDb.lockRun {
+                db.writableDatabase.delete(
+                    "work_sessions",
+                    "start_time NOT LIKE '__:__' OR end_time NOT LIKE '__:__' OR date NOT LIKE '____-__-__'",
+                    null
+                )
+            }
         } catch (e: Exception) {
             // Non-fatal: worst case the tolerant readers above keep the app usable.
         }
@@ -432,6 +438,12 @@ class MainActivity : Activity() {
     }
 
     private fun addSite(name: String, location: String = "", employer: String = "", wage: String? = null, driveMinutes: Int = 0) {
+        val trimmed = name.trim()
+        if (jobSites.any { it.name.equals(trimmed, ignoreCase = true) }) {
+            statusMessage = "A project named \"$trimmed\" already exists."
+            renderAll()
+            return
+        }
         val cv = android.content.ContentValues()
         cv.put("name", name)
         cv.put("location", if (location.isBlank()) null else location)
@@ -439,18 +451,24 @@ class MainActivity : Activity() {
         cv.put("hourly_wage", parseWage(wage))
         cv.put("color", "#059669")
         cv.put("drive_minutes", driveMinutes)
-        db.writableDatabase.insert("job_sites", null, cv)
+        HoursDb.lockRun { db.writableDatabase.insert("job_sites", null, cv) }
         refreshData(); renderAll()
     }
 
     private fun renameSite(id: Int, name: String, location: String, employer: String = "", wage: String? = null, driveMinutes: Int = 0) {
+        val trimmed = name.trim()
+        if (jobSites.any { it.id != id && it.name.equals(trimmed, ignoreCase = true) }) {
+            statusMessage = "A project named \"$trimmed\" already exists."
+            renderAll()
+            return
+        }
         android.content.ContentValues().apply {
             put("name", name)
             put("location", if (location.isBlank()) null else location)
             put("employer", if (employer.isBlank()) null else employer)
             put("hourly_wage", parseWage(wage))
             put("drive_minutes", driveMinutes)
-            db.writableDatabase.update("job_sites", this, "id=?", arrayOf(id.toString()))
+            HoursDb.lockRun { db.writableDatabase.update("job_sites", this, "id=?", arrayOf(id.toString())) }
         }
         refreshData(); renderAll()
     }
@@ -649,7 +667,10 @@ class MainActivity : Activity() {
     // A bare-bones session whose workedMinutes() (00:00 → liveMin minutes, no
     // break) equals the timer's current elapsed minutes, for the active job today.
     private fun makeLiveSession(jobId: Int, date: String, minutes: Int): WorkSession {
-        val endSec = (minutes * 60) % (24 * 3600)
+        // Cap at end-of-day: minutes >= 24h can't be represented in a single-day
+        // HH:MM end time. A live timer that long still reports the full day.
+        val capped = minutes.coerceAtMost(24 * 60)
+        val endSec = (capped * 60) % (24 * 3600)
         return WorkSession(
             jobSiteId = jobId,
             date = date,
@@ -679,8 +700,10 @@ class MainActivity : Activity() {
     private fun deleteSite(id: Int) {
         val site = jobSites.find { it.id == id }
         val removed = sessionsFor(id).size
-        db.writableDatabase.delete("work_sessions", "job_site_id=?", arrayOf(id.toString()))
-        db.writableDatabase.delete("job_sites", "id=?", arrayOf(id.toString()))
+        HoursDb.lockRun {
+            db.writableDatabase.delete("work_sessions", "job_site_id=?", arrayOf(id.toString()))
+            db.writableDatabase.delete("job_sites", "id=?", arrayOf(id.toString()))
+        }
         // Don't leave the clock pointed at a project that no longer exists.
         if (activeJobId == id) {
             activeJobId = -1
@@ -703,7 +726,9 @@ class MainActivity : Activity() {
         cv.put("end_time", session.endTime)
         cv.put("break_minutes", clampedBreak(session))
         cv.put("notes", session.notes)
-        val rowId = db.writableDatabase.insert("work_sessions", null, cv)
+        val rowId = HoursDb.lockRun {
+            db.writableDatabase.insert("work_sessions", null, cv)
+        }
         if (rowId == -1L) {
             // Don't claim success on a failed insert, and don't touch the export.
             statusMessage = "Could not save that task"
@@ -731,7 +756,9 @@ class MainActivity : Activity() {
             put("break_minutes", clampedBreak(session))
             put("notes", session.notes)
         }
-        val rows = db.writableDatabase.update("work_sessions", cv, "id=?", arrayOf(session.id.toString()))
+        val rows = HoursDb.lockRun {
+            db.writableDatabase.update("work_sessions", cv, "id=?", arrayOf(session.id.toString()))
+        }
         if (rows < 1) {
             // The task is gone (deleted elsewhere) — say so instead of reporting success.
             statusMessage = "That task no longer exists"
@@ -744,7 +771,9 @@ class MainActivity : Activity() {
     }
 
     private fun deleteSession(session: WorkSession) {
-        db.writableDatabase.delete("work_sessions", "id=?", arrayOf(session.id.toString()))
+        HoursDb.lockRun {
+            db.writableDatabase.delete("work_sessions", "id=?", arrayOf(session.id.toString()))
+        }
         refreshData()
         statusMessage = "Deleted ✓"
         renderAll()
@@ -1111,16 +1140,25 @@ private fun stopTimerNotification() {
             renderAll()
             return
         }
+        // One sync at a time. If a sync is already running (e.g. the previous
+        // task-save kicked one off), drop this call — the sync that's in flight
+        // already reads all currently-unsynced rows, so a re-entrant run would
+        // only add contention on the shared SQLite connection. New rows saved
+        // while it runs will be picked up by the next Sync now / save.
+        if (syncRunning) return
+        syncRunning = true
         val dbh = db
         Thread {
             val msg = try {
-                val engine = SyncEngine(dbh, token = tok, workerUserId = uid)
-                val pushed = engine.sync()
-                val pulled = engine.pull()
-                when {
-                    pushed == "Nothing to sync." && pulled == "Nothing new on the server." ->
-                        "Up to date."
-                    else -> "$pushed $pulled".trim()
+                HoursDb.lockRun {
+                    val engine = SyncEngine(dbh, token = tok, workerUserId = uid)
+                    val pushed = engine.sync()
+                    val pulled = engine.pull()
+                    when {
+                        pushed == "Nothing to sync." && pulled == "Nothing new on the server." ->
+                            "Up to date."
+                        else -> "$pushed $pulled".trim()
+                    }
                 }
             } catch (e: com.example.hourstracker.sync.SyncException) {
                 "Sync failed: ${e.message}"
@@ -1128,6 +1166,7 @@ private fun stopTimerNotification() {
                 "Sync failed: ${e.message}"
             }
             mainHandler.post {
+                syncRunning = false
                 statusMessage = msg
                 renderAll()
             }
@@ -2667,7 +2706,8 @@ private fun setDrivingWage(wage: String) {
     val w = wage.toDoubleOrNull()
     android.content.ContentValues().apply {
         if (w == null) putNull("hourly_wage") else put("hourly_wage", w)
-        db.writableDatabase.update("job_sites", this, "id=?", arrayOf(driving.id.toString()))
+    }.let { cv ->
+        HoursDb.lockRun { db.writableDatabase.update("job_sites", cv, "id=?", arrayOf(driving.id.toString())) }
     }
     statusMessage = "Driving rate set to ${if (w == 0.0 || w == null) "0 (hours only, no charge)" else "$${String.format(Locale.US, "%.2f", w)}/hr"}"
     refreshData(); renderAll()
@@ -2744,6 +2784,11 @@ private fun setDrivingWage(wage: String) {
     private fun activeSite(): JobSite? = jobSites.find { it.id == activeJobId }
 
     private fun showAddSession() {
+        if (jobSites.isEmpty()) {
+            statusMessage = "Add a project first — a task needs a project."
+            renderAll()
+            return
+        }
         val now = LocalDateTime.now()
         val today = now.toLocalDate().toString()
         showSessionDialog(
@@ -2876,7 +2921,7 @@ private fun setDrivingWage(wage: String) {
                 start.error = if (sBad) "Pick a start time" else null
                 end.error = if (eBad) "Pick an end time" else null
                 if (sBad || eBad) return@setOnClickListener
-                val rid = jobSites.getOrNull(selectedIdx)?.id ?: 1
+                val rid = jobSites.getOrNull(selectedIdx)?.id ?: 0
                 val brkMin = (brk.text.toString().toIntOrNull() ?: 0).coerceAtLeast(0)
                 dlg.dismiss()
                 onSave(date.text.toString(), s24, e24, brkMin, rid)

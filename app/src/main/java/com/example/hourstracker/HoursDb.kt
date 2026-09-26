@@ -3,12 +3,28 @@ package com.example.hourstracker
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * Native SQLite store for HoursTracker. Mirrors the Room schema exactly so
  * exported data is identical to the Compose version.
  */
 class HoursDb(context: Context) : SQLiteOpenHelper(context, "hours_tracker.db", null, 6) {
+
+    companion object {
+        /**
+         * Serializes every writer (main thread, sync thread, auto-backup) so the
+         * single shared SQLiteOpenHelper connection never sees two writers at
+         * once, which would raise SQLITE_BUSY / "database is locked".
+         */
+        private val writeLock = ReentrantLock()
+
+        /** Run [block] under the shared write lock, releasing it on every exit. */
+        fun <T> lockRun(block: () -> T): T {
+            writeLock.lock()
+            return try { block() } finally { writeLock.unlock() }
+        }
+    }
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(

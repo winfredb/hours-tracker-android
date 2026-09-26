@@ -178,7 +178,7 @@ class Widget3x1Provider : AppWidgetProvider() {
                 cv.put("end_time", booked.endTime)
                 cv.put("break_minutes", booked.breakMinutes)
                 cv.put("notes", "clock")
-                db.writableDatabase.insert("work_sessions", null, cv)
+                HoursDb.lockRun { db.writableDatabase.insert("work_sessions", null, cv) }
                 db.close()
             } catch (t: Throwable) { }
             // No workbook is written: the DB is the record, and backups are on demand.

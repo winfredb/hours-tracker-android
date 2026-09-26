@@ -189,6 +189,7 @@ object Backup {
         var taskCount = 0
         try {
             val w = db.writableDatabase
+            HoursDb.lockRun {
             w.beginTransaction()
             try {
                 w.delete("work_sessions", null, null)
@@ -234,6 +235,7 @@ object Backup {
                 w.setTransactionSuccessful()
             } finally {
                 w.endTransaction()
+            }
             }
         } finally {
             db.close()
