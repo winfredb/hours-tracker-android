@@ -1,6 +1,6 @@
 # Hours Tracker
 
-A pure-native Android app for tracking **work hours per job / project site** — clock in/out with breaks, per-site drive time and pay rate, weekly & pay-period reporting, per-project spreadsheet export, a homescreen widget, and optional cloud sync to a self-hosted backend for office view.
+A pure-native Android app for tracking **work hours per job / project site** — clock in/out with breaks, per-site drive time and pay rate, weekly & pay-period reporting, PDF export (summary and Office-style pay-period card), a homescreen widget, and optional cloud sync to a self-hosted backend for office view.
 
 Built with **only `android.*` / `java.*`** — no Jetpack Compose, Room, or Hilt. UI is `android.widget`, storage is `SQLiteOpenHelper`.
 
@@ -13,7 +13,7 @@ Built with **only `android.*` / `java.*`** — no Jetpack Compose, Room, or Hilt
 - **Job sites & projects** — each site has a name, site label, per-site **employer**, **hourly wage**, and **drive minutes**.
 - **Drive time** — per-project drive minutes auto-credited once per day (commute) and included in overtime; a catch-all *Driving* site avoids double-counting manual commute clock-ins.
 - **Home reports** — weekly bar chart and **pay-period** summary (hours by project, hours per week, OT over 40h, drive time), ticking live with the timer.
-- **Per-project export** — each project exports to its own `.xlsx` spreadsheet.
+- **PDF export** — save or share a date-range summary PDF (Summary and By-Week views) straight to Downloads via `MediaStore`. (Per-project `.xlsx` workbooks were retired early in the project.)
 - **Pay-period PDF** — Office-style pay-period report card rendered to PDF.
 - **Home screen widget (3×1)** — shows hours today as H:MM, the active job, jobs worked, and estimated pay, live-updated by the `TimerService` while running.
 - **Backup & restore** — manual JSON backup/restore plus a **daily automatic backup**; exports and backups go to `Downloads/HoursTracker/` via `MediaStore`.
