@@ -505,9 +505,7 @@ class MainActivity : Activity() {
             ?: sundayOf(LocalDate.now().toString())
     // Header label for the picker row: bi-weekly shows its anchor date.
     private val payHeaderLabel: String
-        get() = if (payPreset == "biweekly")
-            "Bi-weekly · starts ${isoDateDisplay(biweeklyStart)}"
-        else payPresetLabel
+        get() = "${payPresetLabel} · ${isoDateDisplay(payPeriodStart)} – ${isoDateDisplay(payPeriodEnd)}"
     private fun resolvedPayRange(): Pair<String, String> {
         if (payPreset == "custom") {
             val s = prefs.getString("pay_start", null)
@@ -526,12 +524,10 @@ class MainActivity : Activity() {
                 first.toString() to first.withDayOfMonth(first.lengthOfMonth()).toString()
             }
             else -> {
-                // Bi-weekly: a recurring 14-day cycle anchored on a user-picked
-                // date. The current period is whichever aligned window (anchor +
-                // 14k) contains today. Defaults to this week's Sunday.
-                val anchor = try { LocalDate.parse(biweeklyStart) } catch (e: Exception) { LocalDate.now() }
-                val days = java.time.temporal.ChronoUnit.DAYS.between(anchor, today)
-                val start = anchor.plusDays(Math.floorDiv(days, 14L) * 14)
+                // Bi-weekly: a fixed 14-day period that starts on the user-picked
+                // anchor date (no cycle-alignment — the pick is honored exactly).
+                // Defaults to this week's Sunday when none has been chosen.
+                val start = try { LocalDate.parse(biweeklyStart) } catch (e: Exception) { LocalDate.parse(sundayOf(today.toString())) }
                 start.toString() to start.plusDays(13).toString()
             }
         }
@@ -2082,15 +2078,41 @@ private fun stopTimerNotification() {
                     setPadding(dp(14), dp(14), dp(14), dp(14))
                     isClickable = true
                     setOnClickListener {
-                        // Custom still needs a free-form date, so keep the picker popup.
-                        if (key == "custom") { showPayDatePicker(true); return@setOnClickListener }
+                        // Custom: chain start then end pickers and persist BOTH, so
+                        // the range actually carries over to Home + Export. (A partial
+                        // range used to silently fall back to the bi-weekly default.)
+                        if (key == "custom") {
+                            val today = LocalDate.now()
+                            val pickEnd = { start: LocalDate ->
+                                DatePickerDialog(this@MainActivity, pickerDialogThemeId(), { _, y2, m2, d2 ->
+                                    val end = LocalDate.of(y2, m2 + 1, d2)
+                                    if (end.isBefore(start)) {
+                                        statusMessage = "End date can't be before start date"
+                                    } else {
+                                        prefs.edit()
+                                            .putString("pay_preset", "custom")
+                                            .putString("pay_start", start.toString())
+                                            .putString("pay_end", end.toString())
+                                            .apply()
+                                        rangeTxt.text = payHeaderLabel
+                                        box.removeView(menuBox); payOpen = false
+                                        statusMessage = "Pay period: $payHeaderLabel"
+                                    }
+                                    renderAll()
+                                }, today.year, today.monthValue - 1, today.dayOfMonth).show()
+                            }
+                            DatePickerDialog(this@MainActivity, pickerDialogThemeId(), { _, y1, m1, d1 ->
+                                pickEnd(LocalDate.of(y1, m1 + 1, d1))
+                            }, today.year, today.monthValue - 1, today.dayOfMonth).show()
+                            return@setOnClickListener
+                        }
                         val ed = prefs.edit()
                         ed.putString("pay_preset", key)
                         ed.remove("pay_start"); ed.remove("pay_end")
                         ed.apply()
                         rangeTxt.text = payHeaderLabel
                         box.removeView(menuBox); payOpen = false
-                        statusMessage = "Pay period: $payHeaderLabel (${isoDateDisplay(payPeriodStart)} - ${isoDateDisplay(payPeriodEnd)})"
+                        statusMessage = "Pay period: $payHeaderLabel"
                     }
                 }
                 val active = payPreset == key
@@ -2145,28 +2167,6 @@ private fun stopTimerNotification() {
 
         wrap.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         return wrap
-    }
-
-    // Pick the pay period start/end date. The range is kept valid (start <= end)
-    // by pushing the other bound when the two would cross.
-    private fun showPayDatePicker(isStart: Boolean) {
-        val cur = try {
-            LocalDate.parse(if (isStart) payPeriodStart else payPeriodEnd)
-        } catch (e: Exception) { LocalDate.now() }
-        DatePickerDialog(this, pickerDialogThemeId(), { _, y, mo, d ->
-            val ed = prefs.edit()
-            ed.putString("pay_preset", "custom")
-            if (isStart) ed.putString("pay_start", LocalDate.of(y, mo + 1, d).toString())
-            else ed.putString("pay_end", LocalDate.of(y, mo + 1, d).toString())
-            ed.apply()
-            if (payPeriodStart > payPeriodEnd) {
-                val fix = prefs.edit()
-                if (isStart) fix.putString("pay_end", payPeriodStart) else fix.putString("pay_start", payPeriodEnd)
-                fix.apply()
-            }
-            statusMessage = "Pay period: ${isoDateDisplay(payPeriodStart)} - ${isoDateDisplay(payPeriodEnd)}"
-            renderAll()
-        }, cur.year, cur.monthValue - 1, cur.dayOfMonth).show()
     }
 
     private fun buildDrawer(): View {
@@ -3149,7 +3149,7 @@ private fun setDrivingWage(wage: String) {
             val opts = listOf(
                 "This week" to { presetRange("thisweek", share) },
                 "Last week" to { presetRange("lastweek", share) },
-                "Pay period ($payHeaderLabel)" to { exportPayPeriodCard(share) },
+                "Pay period…" to { showPayPeriodPicker(share) },
                 "2 weeks from date…" to { showTwoWeekFromDatePicker(share) },
                 "All time" to { presetRange("all", share) },
                 "Custom range…" to { showCustomRangePicker(share) }
@@ -3226,6 +3226,16 @@ private fun setDrivingWage(wage: String) {
 
         private fun showTwoWeekRange(start: LocalDate, share: Boolean = false) {
             exportRange(start.toString(), start.plusDays(13).toString(), share)
+        }
+
+        // Export the Pay-period card for a 14-day window beginning on a
+        // calendar-picked start date. Defaults to the current pay period start.
+        private fun showPayPeriodPicker(share: Boolean = false) {
+            val cur = try { LocalDate.parse(payPeriodStart) } catch (e: Exception) { LocalDate.now() }
+            DatePickerDialog(this, pickerDialogThemeId(), { _, y, mo, d ->
+                val start = LocalDate.of(y, mo + 1, d)
+                exportPayPeriodCard(start.toString(), start.plusDays(13).toString(), share)
+            }, cur.year, cur.monthValue - 1, cur.dayOfMonth).show()
         }
 
         /**
@@ -3321,10 +3331,8 @@ private fun setDrivingWage(wage: String) {
          * Hours per week · OT over threshold · drive. Only the "Pay period"
          * preset uses this renderer; other ranges keep the Summary/By Week PDF.
          */
-        private fun exportPayPeriodCard(share: Boolean = false) {
+        private fun exportPayPeriodCard(from: String, to: String, share: Boolean = false) {
             try {
-                val from = payPeriodStart
-                val to = payPeriodEnd
                 val inRange = sessions.filter { it.date >= from && it.date <= to }
                 if (inRange.isEmpty()) { statusMessage = "No tasks in range"; renderAll(); return }
                 val siteName = { id: Int -> jobSites.find { it.id == id }?.name ?: "Unknown" }
